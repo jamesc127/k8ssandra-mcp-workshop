@@ -1,0 +1,72 @@
+# NoSQLBench Load Test Job
+# Runs a 3-phase CQL key-value workload:
+#   1. Schema creation (keyspace + table)
+#   2. Rampup: Load 500k rows
+#   3. Main: 30 minutes of mixed 50/50 read/write at 1000 ops/sec
+#
+# To re-run, delete the old job first:
+#   kubectl delete job nosqlbench-load -n default
+#   kubectl apply -f nosqlbench-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nosqlbench-load
+  namespace: default
+  labels:
+    app: nosqlbench
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: nosqlbench
+    spec:
+      restartPolicy: OnFailure
+      volumes:
+        - name: workload
+          configMap:
+            name: nb-cql-keyvalue
+      containers:
+        - name: nosqlbench
+          image: nosqlbench/nosqlbench
+          volumeMounts:
+            - name: workload
+              mountPath: /workloads
+          env:
+            - name: CASSANDRA_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: demo-superuser
+                  key: username
+            - name: CASSANDRA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: demo-superuser
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              NB="java -jar /nb5.jar"
+              HOST=demo-dc1-all-pods-service
+              DC=dc1
+              echo "=== NoSQLBench CQL KeyValue Workload ==="
+              echo "Target: $HOST | DC: $DC | User: $CASSANDRA_USERNAME"
+              echo ""
+              echo "Phase 1: Schema creation"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:schema threads=1 host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD
+              echo ""
+              echo "Phase 2: Rampup - loading 500k rows"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:rampup host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=500k threads=auto --progress console:5s
+              echo ""
+              echo "Phase 3: Main workload - 30 min mixed read/write at 1000 ops/sec"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=1800000 cyclerate=1000 threads=auto --progress console:10s
+              echo ""
+              echo "=== Workload complete ==="
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "2Gi"
+              cpu: "1"

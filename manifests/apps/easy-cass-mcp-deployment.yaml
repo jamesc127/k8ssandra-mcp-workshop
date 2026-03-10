@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: easy-cass-mcp
+  namespace: default
+  labels:
+    app: easy-cass-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: easy-cass-mcp
+  template:
+    metadata:
+      labels:
+        app: easy-cass-mcp
+    spec:
+      containers:
+        - name: easy-cass-mcp
+          image: rustyrazorblade/easy-cass-mcp:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: CASSANDRA_HOST
+              value: "demo-dc1-all-pods-service.default.svc.cluster.local"
+            - name: CASSANDRA_PORT
+              value: "9042"
+            - name: CASSANDRA_DATACENTER
+              value: "dc1"
+            - name: CASSANDRA_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: demo-superuser
+                  key: username
+            - name: CASSANDRA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: demo-superuser
+                  key: password
+            - name: LOG_LEVEL
+              value: "INFO"
+            # Required: FastMCP binds to 127.0.0.1 by default,
+            # must be 0.0.0.0 for NLB health checks and external access
+            - name: FASTMCP_SERVER_HOST
+              value: "0.0.0.0"
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

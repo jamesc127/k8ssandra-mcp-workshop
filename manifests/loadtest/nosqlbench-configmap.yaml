@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nb-cql-keyvalue
+  namespace: default
+data:
+  cql-keyvalue.yaml: |
+    bindings:
+      seq_key: Mod(500000); ToString() -> String
+      seq_value: Hash(); Mod(1000000000); ToString() -> String
+      rw_key: Uniform(0,500000); ToString() -> String
+      rw_value: Hash(); Mod(1000000000); ToString() -> String
+
+    blocks:
+      schema:
+        params:
+          prepared: false
+        ops:
+          create_keyspace: |
+            CREATE KEYSPACE IF NOT EXISTS baselines
+            WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': '3'}
+            AND durable_writes = true;
+          create_table: |
+            CREATE TABLE IF NOT EXISTS baselines.keyvalue (
+              key text PRIMARY KEY,
+              value text
+            );
+      rampup:
+        params:
+          cl: LOCAL_QUORUM
+          prepared: true
+        ops:
+          rampup_insert: |
+            INSERT INTO baselines.keyvalue (key, value)
+            VALUES ({seq_key}, {seq_value});
+      main:
+        params:
+          cl: LOCAL_QUORUM
+          prepared: true
+        ops:
+          main_read:
+            ratio: 5
+            stmt: |
+              SELECT * FROM baselines.keyvalue WHERE key = {rw_key};
+          main_write:
+            ratio: 5
+            stmt: |
+              INSERT INTO baselines.keyvalue (key, value)
+              VALUES ({rw_key}, {rw_value});
