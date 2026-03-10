@@ -71,16 +71,40 @@ eksctl create cluster \
 
 ### 2. Tag Subnets
 
-Tag private subnets for internal load balancers:
+The automated script discovers your VPC subnets, classifies them as public/private
+by analyzing route tables, and applies the required tags:
+
 ```bash
-aws ec2 create-tags --resources <private-subnet-ids> \
-  --tags Key=kubernetes.io/role/internal-elb,Value=1 --region us-east-1
+./scripts/setup-vpc.sh k8ssandra-cluster us-east-1
 ```
 
-Tag public subnets for internet-facing load balancers:
+Preview what it would do without making changes:
 ```bash
+DRY_RUN=true ./scripts/setup-vpc.sh k8ssandra-cluster us-east-1
+```
+
+If auto-detection doesn't work (e.g., EKS Auto Mode subnets without standard routing),
+the script prints manual commands. You can also tag manually:
+
+```bash
+# List all subnets in your VPC
+aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=<VPC_ID>" \
+  --query 'Subnets[].[SubnetId,CidrBlock,AvailabilityZone]' \
+  --region us-east-1 --output table
+
+# Tag private subnets for internal NLBs
+aws ec2 create-tags --resources <private-subnet-ids> \
+  --tags Key=kubernetes.io/role/internal-elb,Value=1 --region us-east-1
+
+# Tag public subnets for internet-facing NLBs
 aws ec2 create-tags --resources <public-subnet-ids> \
   --tags Key=kubernetes.io/role/elb,Value=1 --region us-east-1
+
+# Restrict node placement to private subnets only
+aws eks update-cluster-config --name k8ssandra-cluster \
+  --resources-vpc-config subnetIds=<private-subnet-1>,<private-subnet-2>,<private-subnet-3> \
+  --region us-east-1
 ```
 
 ### 3. Deploy Everything
@@ -132,6 +156,7 @@ k8ssandra-workshop/
 ├── docs/
 │   └── TROUBLESHOOTING.md
 └── scripts/
+    ├── setup-vpc.sh                   # Auto-discover & tag VPC subnets for NLB
     ├── deploy.sh
     └── teardown.sh
 ```

@@ -10,7 +10,7 @@ echo "============================================"
 echo ""
 
 # Check prerequisites
-for cmd in kubectl helm; do
+for cmd in kubectl helm aws; do
   if ! command -v $cmd &> /dev/null; then
     echo "ERROR: $cmd is required but not installed."
     exit 1
@@ -25,6 +25,18 @@ echo ""
 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
   echo "Aborted."
   exit 1
+fi
+
+# Step 0: VPC Subnet Tagging
+echo ""
+echo ">>> Step 0/6: Tagging VPC subnets for load balancer placement..."
+read -p "    Run VPC subnet tagging? (y/n) " -n 1 -r
+echo ""
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+  "$SCRIPT_DIR/setup-vpc.sh" "${CLUSTER_NAME:-k8ssandra-cluster}" "${REGION:-us-east-1}"
+else
+  echo "    Skipped. Run manually if NLB fails to provision:"
+  echo "    $SCRIPT_DIR/setup-vpc.sh <cluster-name> <region>"
 fi
 
 # Step 1: StorageClass
