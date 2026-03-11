@@ -2,8 +2,8 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: ebs-gp3
-# EKS Auto Mode uses its own EBS CSI driver (not ebs.csi.aws.com)
-provisioner: ebs.csi.eks.amazonaws.com
+# Standard EKS EBS CSI driver (installed via eksctl addon)
+provisioner: ebs.csi.aws.com
 parameters:
   type: gp3
 volumeBindingMode: WaitForFirstConsumer

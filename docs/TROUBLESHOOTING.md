@@ -3,22 +3,28 @@
 ## EKS / Infrastructure Issues
 
 ### Pods stuck in Pending (ImagePullBackOff)
-**Cause**: Karpenter placed nodes in public subnets without NAT Gateway routing.
-**Fix**: Update EKS cluster VPC config to only use private subnets:
-```bash
-aws eks update-cluster-config --name k8ssandra-cluster \
-  --resources-vpc-config subnetIds=<private-subnet-1>,<private-subnet-2>,<private-subnet-3>
-```
+**Cause**: Nodes are in public subnets without NAT Gateway routing.
+**Fix**: This should not happen if you created the cluster with the provided ClusterConfig (`manifests/infra/eksctl-cluster.yaml`), which sets `privateNetworking: true` to place all nodes in private subnets. If you used a custom VPC, ensure nodes are in private subnets with NAT Gateway access.
 
 ### StorageClass PVC failures — "provisioner is not supported"
-**Cause**: EKS Auto Mode uses `ebs.csi.eks.amazonaws.com`, not the standard `ebs.csi.aws.com`.
-**Fix**: Use the `ebs-gp3` StorageClass from `manifests/infra/storageclass.yaml`.
+**Cause**: Wrong EBS CSI provisioner or missing EBS CSI driver addon.
+**Fix**: Use the `ebs-gp3` StorageClass from `manifests/infra/storageclass.yaml` (provisioner: `ebs.csi.aws.com`). Ensure the `aws-ebs-csi-driver` addon is installed — this is handled automatically by the provided ClusterConfig.
 
 ### NLB not provisioning — "unable to resolve at least one subnet"
 **Cause**: Subnets missing required tags.
-**Fix**:
-- Private subnets: `kubernetes.io/role/internal-elb=1`
+**Fix**: If you created the cluster with the provided ClusterConfig, eksctl tags subnets automatically. If you used a custom VPC, tag subnets manually:
 - Public subnets: `kubernetes.io/role/elb=1`
+- Private subnets: `kubernetes.io/role/internal-elb=1`
+
+```bash
+# Tag public subnets for internet-facing NLBs
+aws ec2 create-tags --resources <PUBLIC_SUBNET_IDS> \
+  --tags Key=kubernetes.io/role/elb,Value=1 --region us-east-1
+
+# Tag private subnets for internal NLBs
+aws ec2 create-tags --resources <PRIVATE_SUBNET_IDS> \
+  --tags Key=kubernetes.io/role/internal-elb,Value=1 --region us-east-1
+```
 
 ## k8ssandra-operator Issues
 
@@ -39,7 +45,7 @@ helm install k8ssandra-operator k8ssandra/k8ssandra-operator --namespace default
 
 ### MCP server binds to 127.0.0.1 — NLB can't reach it
 **Cause**: FastMCP defaults to `127.0.0.1`.
-**Fix**: Set `FASTMCP_SERVER_HOST=0.0.0.0` in the deployment env vars. Note: `UVICORN_HOST` and `HOST` do NOT work.
+**Fix**: Set `FASTMCP_SERVER_HOST=0.0.0.0` in the deployment env vars. Note: `UVICORN_HOST` and `HOST` env vars do NOT work.
 
 ### Claude Desktop can't connect to remote MCP server
 **Cause**: Claude Desktop doesn't support `"type": "streamable-http"` in config files.

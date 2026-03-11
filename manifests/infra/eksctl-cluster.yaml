@@ -1,0 +1,28 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: k8ssandra-cluster
+  region: us-east-1
+  version: "1.31"
+
+iam:
+  withOIDC: true  # Required for EBS CSI driver IRSA
+
+managedNodeGroups:
+  - name: cassandra-workers
+    instanceType: m5.xlarge
+    desiredCapacity: 3
+    minSize: 3
+    maxSize: 4
+    privateNetworking: true  # Nodes in private subnets only — prevents ImagePullBackOff
+    volumeSize: 50
+    volumeType: gp3
+    iam:
+      withAddonPolicies:
+        ebs: true
+
+addons:
+  - name: aws-ebs-csi-driver
+    wellKnownPolicies:
+      ebsCSIController: true

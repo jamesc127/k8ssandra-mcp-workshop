@@ -6,7 +6,7 @@ metadata:
   labels:
     app: easy-cass-mcp
   annotations:
-    # Required for internet-facing NLB on EKS Auto Mode
+    # Required for internet-facing NLB on EKS
     service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
 spec:
   selector:
