@@ -1,0 +1,317 @@
+# Cassandra on Kubernetes — the hard way (no operator)
+#
+# This is what you had to write before k8ssandra-operator.
+# It is intentionally verbose to illustrate the point.
+#
+# Compare with: manifests/cassandra/k8ssandra-cluster.yaml (24 lines)
+# This file: ~270 lines, and it's still missing:
+#   - Rack-aware scheduling (requires node labels + pod anti-affinity per rack)
+#   - Automated repairs (you'd need a separate Reaper deployment)
+#   - Backup/restore (you'd need a separate Medusa deployment)
+#   - TLS/mTLS between nodes
+#   - Metrics scraping
+#   - Bootstrap coordination (the init container below is a rough approximation)
+#   - Proper token assignment for multi-DC topologies
+#   - Rolling restart safety (K8s doesn't know about Cassandra streaming state)
+#
+# This is the thing you maintained. By hand. Across multiple clusters.
+
+---
+# Headless service for stable DNS — Cassandra nodes discover each other via
+# <pod-name>.<service-name>.<namespace>.svc.cluster.local
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra
+  namespace: default
+  labels:
+    app: cassandra
+spec:
+  clusterIP: None   # headless — no load balancing, just DNS
+  selector:
+    app: cassandra
+  ports:
+    - name: cql
+      port: 9042
+      targetPort: 9042
+    - name: intra-node
+      port: 7000
+      targetPort: 7000
+    - name: tls-intra-node
+      port: 7001
+      targetPort: 7001
+    - name: jmx
+      port: 7199
+      targetPort: 7199
+
+---
+# Client-facing service (optional, but you need one if anything talks to Cassandra)
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra-client
+  namespace: default
+  labels:
+    app: cassandra
+spec:
+  selector:
+    app: cassandra
+  ports:
+    - name: cql
+      port: 9042
+      targetPort: 9042
+
+---
+# ConfigMap with cassandra.yaml — every tunable you'd otherwise hand-edit per node.
+# This is a single config for all nodes; rack/DC-aware overrides require
+# either multiple ConfigMaps, init container logic, or env var templating.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cassandra-config
+  namespace: default
+data:
+  cassandra.yaml: |
+    cluster_name: demo
+    num_tokens: 16
+    allocate_tokens_for_local_replication_factor: 3
+
+    # Seed discovery: hardcoded pod DNS names.
+    # If cassandra-0 restarts and gets a new IP before gossip stabilizes,
+    # nodes may fail to bootstrap. You manage this.
+    seed_provider:
+      - class_name: org.apache.cassandra.locator.SimpleSeedProvider
+        parameters:
+          - seeds: "cassandra-0.cassandra.default.svc.cluster.local,cassandra-1.cassandra.default.svc.cluster.local"
+
+    listen_address:        ""   # overridden by init container to pod IP
+    rpc_address:           0.0.0.0
+    broadcast_rpc_address: ""   # overridden by init container to pod IP
+
+    endpoint_snitch: GossipingPropertyFileSnitch
+    # You must also manage cassandra-rackdc.properties per node or via init container
+
+    data_file_directories:
+      - /var/lib/cassandra/data
+    commitlog_directory: /var/lib/cassandra/commitlog
+    saved_caches_directory: /var/lib/cassandra/saved_caches
+    hints_directory: /var/lib/cassandra/hints
+
+    partitioner: org.apache.cassandra.dht.Murmur3Partitioner
+
+    # Compaction
+    concurrent_compactors: 2
+    compaction_throughput_mb_per_sec: 64
+
+    # Commit log
+    commitlog_sync: periodic
+    commitlog_sync_period_in_ms: 10000
+    commitlog_segment_size_in_mb: 32
+
+    # Networking
+    storage_port: 7000
+    ssl_storage_port: 7001
+    native_transport_port: 9042
+    start_native_transport: true
+
+    # Auth — uncomment to enable
+    # authenticator: PasswordAuthenticator
+    # authorizer: CassandraAuthorizer
+
+    # Timeouts
+    read_request_timeout_in_ms: 5000
+    write_request_timeout_in_ms: 2000
+    request_timeout_in_ms: 10000
+
+  cassandra-rackdc.properties: |
+    dc=dc1
+    rack=rack1
+    # Every node gets the same rack here. For real rack awareness you need
+    # per-pod config, which means per-pod ConfigMaps or init container logic
+    # reading node labels. This is left as an exercise for the reader.
+    prefer_local=true
+
+  jvm11-server.options: |
+    # Heap: set both Xms and Xmx to the same value to avoid heap resizing.
+    # For a real cluster you'd tune this per node based on available RAM.
+    -Xms512M
+    -Xmx512M
+    -XX:+UseG1GC
+    -XX:G1RSetUpdatingPauseTimePercent=5
+    -XX:MaxGCPauseMillis=300
+    -XX:InitiatingHeapOccupancyPercent=70
+    -Djava.net.preferIPv4Stack=true
+
+---
+# The StatefulSet. This is the main event.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cassandra
+  namespace: default
+  labels:
+    app: cassandra
+spec:
+  serviceName: cassandra   # must match headless service name
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cassandra
+  # updateStrategy controls rolling restarts.
+  # RollingUpdate here means K8s will restart pods one at a time —
+  # but it doesn't wait for Cassandra to finish streaming/repair before
+  # moving to the next pod. You need external tooling (or operator logic)
+  # for that. One bad restart can leave you with an under-replicated cluster.
+  updateStrategy:
+    type: RollingUpdate
+  podManagementPolicy: OrderedReady  # ensures cassandra-0 starts before cassandra-1, etc.
+  template:
+    metadata:
+      labels:
+        app: cassandra
+    spec:
+      # Terminate gracefully — give Cassandra time to flush memtables
+      terminationGracePeriodSeconds: 120
+
+      # This doesn't do rack-aware anti-affinity. For real rack awareness you'd
+      # need topologySpreadConstraints or affinity rules keyed on node labels,
+      # and you'd need to ensure your nodes are actually labeled with rack info.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: cassandra
+                topologyKey: kubernetes.io/hostname
+
+      initContainers:
+        # This init container does two things that Cassandra needs but K8s doesn't
+        # know about: set listen_address/broadcast_rpc_address to the pod IP,
+        # and write the rackdc properties file. Without this, Cassandra binds
+        # to 0.0.0.0 and gossip breaks in interesting ways.
+        - name: configure-pod-ip
+          image: cassandra:4.1.3
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              POD_IP=$(hostname -i)
+              echo "Pod IP: $POD_IP"
+
+              # Copy config and patch listen/broadcast addresses
+              cp /config-src/cassandra.yaml /etc/cassandra/cassandra.yaml
+              sed -i "s/^listen_address:.*$/listen_address: $POD_IP/" /etc/cassandra/cassandra.yaml
+              sed -i "s/^broadcast_rpc_address:.*$/broadcast_rpc_address: $POD_IP/" /etc/cassandra/cassandra.yaml
+
+              # Write rackdc properties
+              cp /config-src/cassandra-rackdc.properties /etc/cassandra/cassandra-rackdc.properties
+
+              # Copy JVM options
+              cp /config-src/jvm11-server.options /etc/cassandra/jvm11-server.options
+
+              echo "Init complete."
+          volumeMounts:
+            - name: config-src
+              mountPath: /config-src
+            - name: cassandra-config-dir
+              mountPath: /etc/cassandra
+
+      containers:
+        - name: cassandra
+          image: cassandra:4.1.3
+          ports:
+            - containerPort: 7000
+              name: intra-node
+            - containerPort: 7001
+              name: tls-intra-node
+            - containerPort: 7199
+              name: jmx
+            - containerPort: 9042
+              name: cql
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: 2000m
+              memory: 2Gi
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # MAX_HEAP_SIZE and HEAP_NEWSIZE are read by cassandra-env.sh.
+            # They override the JVM options file, so keep them in sync.
+            - name: MAX_HEAP_SIZE
+              value: "512M"
+            - name: HEAP_NEWSIZE
+              value: "128M"
+            - name: CASSANDRA_SEEDS
+              value: "cassandra-0.cassandra.default.svc.cluster.local,cassandra-1.cassandra.default.svc.cluster.local"
+            - name: CASSANDRA_CLUSTER_NAME
+              value: "demo"
+            - name: CASSANDRA_DC
+              value: "dc1"
+            - name: CASSANDRA_RACK
+              value: "rack1"
+          # Readiness: only mark ready when CQL is accepting connections.
+          # This gates traffic but does NOT gate the StatefulSet rolling update
+          # on streaming completion — you need operator logic for that.
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - "nodetool status | grep -E '^UN\\s+$(hostname -i)'"
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -c
+                - "nodetool status"
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: cassandra-data
+              mountPath: /var/lib/cassandra
+            - name: cassandra-config-dir
+              mountPath: /etc/cassandra
+
+      volumes:
+        - name: config-src
+          configMap:
+            name: cassandra-config
+        - name: cassandra-config-dir
+          emptyDir: {}
+
+  # Persistent storage — one PVC per pod, provisioned by the StorageClass.
+  # If a pod is deleted and rescheduled to a different node, the PVC stays
+  # behind on the original node's EBS volume. You need the EBS CSI driver
+  # and zone-aware scheduling to avoid orphaned volumes.
+  # Resizing a PVC requires manual intervention or a separate controller.
+  volumeClaimTemplates:
+    - metadata:
+        name: cassandra-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: ebs-gp3
+        resources:
+          requests:
+            storage: 5Gi

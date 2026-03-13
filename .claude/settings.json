@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(kubectl top:*)",
+      "mcp__easy-cass-mcp__get_keyspaces",
+      "mcp__easy-cass-mcp__query_all_nodes"
+    ]
+  }
+}

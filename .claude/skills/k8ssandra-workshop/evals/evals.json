@@ -1,0 +1,60 @@
+{
+  "skill_name": "k8ssandra-workshop",
+  "evals": [
+    {
+      "id": "create-eks-cluster",
+      "prompt": "Create the EKS cluster for the workshop",
+      "expected_output": "Should run eksctl create cluster using the ClusterConfig manifest, then update kubeconfig. Must include: eksctl create cluster -f manifests/infra/eksctl-cluster.yaml and aws eks update-kubeconfig."
+    },
+    {
+      "id": "deploy-full-stack",
+      "prompt": "Deploy the full K8ssandra stack",
+      "expected_output": "Should run ./scripts/deploy.sh as the primary approach, or provide the 5 step-by-step commands (StorageClass, cert-manager, k8ssandra-operator in default namespace, K8ssandraCluster, easy-cass-mcp). Must not use Kubernetes MCP tool calls."
+    },
+    {
+      "id": "check-cassandra-health",
+      "prompt": "How are the Cassandra pods doing?",
+      "expected_output": "Should run kubectl get pods -l app.kubernetes.io/name=cassandra -n default, and optionally kubectl get k8ssandracluster demo -n default."
+    },
+    {
+      "id": "get-credentials",
+      "prompt": "What are the Cassandra superuser credentials?",
+      "expected_output": "Should retrieve username and password from the demo-superuser secret using kubectl get secret demo-superuser -n default with base64 -d decoding."
+    },
+    {
+      "id": "claude-desktop-config",
+      "prompt": "How do I connect Claude Desktop to easy-cass-mcp?",
+      "expected_output": "Should get the NLB hostname with kubectl get svc easy-cass-mcp, then show the claude_desktop_config.json snippet using npx mcp-remote with --allow-http flag."
+    },
+    {
+      "id": "start-load-test",
+      "prompt": "Start the NoSQLBench load test",
+      "expected_output": "Should apply the nosqlbench-job.yaml manifest and show how to monitor with kubectl logs -f job/nosqlbench-load."
+    },
+    {
+      "id": "rerun-load-test",
+      "prompt": "Re-run the load test",
+      "expected_output": "Must delete the existing job first (kubectl delete job nosqlbench-load -n default) before re-applying. Should explain that Jobs are immutable."
+    },
+    {
+      "id": "scale-cassandra",
+      "prompt": "Scale Cassandra to 4 nodes",
+      "expected_output": "Should use kubectl patch k8ssandracluster demo -n default --type=merge with the size field set to 4. Must not use kubectl edit (interactive). Should suggest watching rollout with -w."
+    },
+    {
+      "id": "teardown-workshop",
+      "prompt": "Tear down the workshop",
+      "expected_output": "Should run ./scripts/teardown.sh to remove all resources, then provide eksctl delete cluster --name k8ssandra-cluster --region us-east-1 for cluster deletion."
+    },
+    {
+      "id": "troubleshoot-nlb",
+      "prompt": "The NLB never gets an external address, what's wrong?",
+      "expected_output": "Should identify missing subnet tags as the likely cause, check if cluster was created with the provided eksctl ClusterConfig, and provide aws ec2 create-tags commands for kubernetes.io/role/elb tagging."
+    },
+    {
+      "id": "troubleshoot-webhook",
+      "prompt": "I'm getting a webhook error when I apply the K8ssandraCluster",
+      "expected_output": "Should diagnose operator namespace mismatch, suggest helm list -A to check where k8ssandra-operator is installed, and confirm it must be in the default namespace."
+    }
+  ]
+}

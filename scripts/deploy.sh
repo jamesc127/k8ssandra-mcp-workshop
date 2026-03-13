@@ -124,6 +124,26 @@ if [ -n "$NLB_HOST" ]; then
   echo '    "command": "npx",'
   echo "    \"args\": [\"mcp-remote\", \"http://$NLB_HOST:8000/mcp/\", \"--allow-http\"]"
   echo '  }'
+  echo ""
+
+  # Update .mcp.json with the new NLB hostname so Claude Code picks it up on next restart
+  MCP_JSON="$SCRIPT_DIR/../.mcp.json"
+  cat > "$MCP_JSON" <<EOF
+{
+  "mcpServers": {
+    "easy-cass-mcp": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "http://$NLB_HOST:8000/mcp/",
+        "--allow-http"
+      ]
+    }
+  }
+}
+EOF
+  echo ".mcp.json updated with new NLB hostname."
+  echo "Restart Claude Code to reconnect easy-cass-mcp."
 else
   echo "NLB not ready yet. Check with:"
   echo "  kubectl get svc easy-cass-mcp -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
