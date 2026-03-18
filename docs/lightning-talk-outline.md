@@ -15,7 +15,7 @@
 
 ---
 
-## Act 1 (~2 min) — Hand-Editing YAMLs: The Dark Ages
+## Part 1 (~2 min) — Hand-Editing YAMLs: The Dark Ages
 
 - Life as a C* consultant: `cassandra.yaml`, `cassandra-env.sh`, `jvm.options` — across N nodes, by hand
 - Seed lists, rack assignments, snitch configs, GC tuning — all bespoke per cluster
@@ -25,7 +25,7 @@
 
 ---
 
-## Act 2 (~3 min) — Cassandra Meets Kubernetes: Hope and Pain
+## Part 2 (~3 min) — Cassandra Meets Kubernetes: Hope and Pain
 
 - **The promise:** declarative infrastructure, self-healing, automated scaling
 - **Early attempts:** hand-rolled StatefulSets, init containers for seed discovery, manual PV lifecycle
@@ -46,7 +46,7 @@
 
 ---
 
-## Act 3 (~4 min) — MCP + Live Demo: Giving AI Eyes on Your Cluster
+## Part 3 (~4 min) — MCP + Live Demo: Giving AI Eyes on Your Cluster
 
 - **What is MCP?** (30 seconds)
   - Model Context Protocol: a standard for giving AI models access to external tools
@@ -84,7 +84,7 @@ kubectl delete pod demo-dc1-default-sts-1
 
 ---
 
-## Act 4 (~3 min) — Skills: Teaching the Agent, Not Just Connecting It
+## Part 4 (~3 min) — Skills: Teaching the Agent, Not Just Connecting It
 
 - **What is a skill?** A markdown file with trigger conditions and instructions, loaded into Claude Code's context on-demand — no running service, no deployment, just a markdown file
 - **MCP vs. Skills — head to head:**

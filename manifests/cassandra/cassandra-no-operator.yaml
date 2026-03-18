@@ -1,9 +1,5 @@
 # Cassandra on Kubernetes — the hard way (no operator)
 #
-# This is what you had to write before k8ssandra-operator.
-# It is intentionally verbose to illustrate the point.
-#
-# Compare with: manifests/cassandra/k8ssandra-cluster.yaml (24 lines)
 # This file: ~270 lines, and it's still missing:
 #   - Rack-aware scheduling (requires node labels + pod anti-affinity per rack)
 #   - Automated repairs (you'd need a separate Reaper deployment)
