@@ -48,6 +48,8 @@
 
 ## Part 3 (~4 min) — MCP + Live Demo: Giving AI Eyes on Your Cluster
 
+- **EKS Architecture Overview**
+  - Show slides
 - **What is MCP?** (30 seconds)
   - Model Context Protocol: a standard for giving AI models access to external tools
   - Server exposes tools → Claude calls them → results flow back as context
