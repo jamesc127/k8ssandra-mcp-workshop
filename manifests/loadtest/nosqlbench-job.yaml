@@ -2,7 +2,7 @@
 # Runs a 3-phase CQL key-value workload:
 #   1. Schema creation (keyspace + table)
 #   2. Rampup: Load 500k rows at 100k ops/sec (~5s)
-#   3. Main: 5 minutes of mixed 50/50 read/write at 100k ops/sec
+#   3. Main: 1 hour of mixed 50/50 read/write at 100k ops/sec
 #
 # Uses threads=400 explicitly — threads=auto picks too few threads to
 # sustain six-figure throughput regardless of cyclerate.
@@ -62,8 +62,8 @@ spec:
               echo "Phase 2: Rampup - loading 500k rows at 100k ops/sec"
               $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:rampup host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=500k cyclerate=100000 threads=400 --progress console:5s
               echo ""
-              echo "Phase 3: Main workload - 5 min mixed read/write at 100k ops/sec"
-              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=30000000 cyclerate=100000 threads=400 --progress console:10s
+              echo "Phase 3: Main workload - 1 hour mixed read/write at 100k ops/sec"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=360M cyclerate=100000 threads=400 --progress console:10s
               echo ""
               echo "=== Workload complete ==="
           resources:
