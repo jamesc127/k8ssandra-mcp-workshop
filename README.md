@@ -129,7 +129,7 @@ kubectl get svc easy-cass-mcp -o jsonpath='{.status.loadBalancer.ingress[0].host
 kubectl apply -f manifests/loadtest/nosqlbench-job.yaml
 ```
 
-This runs a 3-phase CQL workload: schema creation, 500k row rampup, then 5 minutes of mixed 50/50 read/write at 100,000 ops/sec. To re-run, delete the old job first:
+This runs a 3-phase CQL workload: schema creation, 500k row rampup, then 1 hour of mixed 50/50 read/write at 100,000 ops/sec. To re-run, delete the old job first:
 
 ```bash
 kubectl delete job nosqlbench-load && kubectl apply -f manifests/loadtest/nosqlbench-job.yaml

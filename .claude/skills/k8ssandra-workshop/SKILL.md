@@ -196,7 +196,7 @@ sudo ln -sf $(which npx) /usr/local/bin/npx
 ## 6. Load Test Management
 
 ```bash
-# Start 3-phase load test (schema → 500k rampup → 5min mixed 50/50 at 100,000 ops/sec)
+# Start 3-phase load test (schema → 500k rampup → 1hr mixed 50/50 at 100,000 ops/sec)
 kubectl apply -f manifests/loadtest/nosqlbench-job.yaml
 
 # Monitor progress
