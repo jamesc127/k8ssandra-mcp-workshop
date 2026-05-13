@@ -103,7 +103,15 @@ helm install cert-manager jetstack/cert-manager \
   --namespace cert-manager --set crds.enabled=true --wait --timeout 5m
 ```
 
-**Step 3 — k8ssandra-operator (must be `default` namespace):**
+**Step 3 — metrics-server (for `kubectl top` node/pod metrics):**
+```bash
+helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
+helm repo update metrics-server
+helm install metrics-server metrics-server/metrics-server \
+  --namespace kube-system --wait --timeout 2m
+```
+
+**Step 4 — k8ssandra-operator (must be `default` namespace):**
 ```bash
 helm repo add k8ssandra https://helm.k8ssandra.io/stable
 helm repo update k8ssandra
@@ -111,14 +119,14 @@ helm install k8ssandra-operator k8ssandra/k8ssandra-operator \
   --namespace default --wait --timeout 5m
 ```
 
-**Step 4 — Cassandra cluster (~3-5 min):**
+**Step 5 — Cassandra cluster (~3-5 min):**
 ```bash
 kubectl apply -f manifests/cassandra/k8ssandra-cluster.yaml
 kubectl wait --for=condition=ready pod \
   -l app.kubernetes.io/name=cassandra -n default --timeout=600s
 ```
 
-**Step 5 — easy-cass-mcp + NoSQLBench ConfigMap:**
+**Step 6 — easy-cass-mcp + NoSQLBench ConfigMap:**
 ```bash
 kubectl apply -f manifests/apps/easy-cass-mcp-deployment.yaml
 kubectl apply -f manifests/apps/easy-cass-mcp-service.yaml

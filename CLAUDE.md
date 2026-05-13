@@ -11,6 +11,7 @@ Workshop repo for teaching Apache Cassandra on Amazon EKS using k8ssandra-operat
 - **k8ssandra-operator** installed to `default` namespace (required for webhook alignment)
 - **easy-cass-mcp** deployed in-cluster, exposed via internet-facing NLB on port 8000
 - **cert-manager** handles TLS for operator webhooks
+- **metrics-server** installed in `kube-system` for `kubectl top` node/pod metrics
 - **NoSQLBench** provides on-demand CQL load testing
 
 ## Key Files
@@ -23,7 +24,7 @@ manifests/
   apps/easy-cass-mcp-*.yaml             # MCP server deployment + NLB service
   loadtest/nosqlbench-*.yaml            # CQL key-value workload + Job
 scripts/
-  deploy.sh                            # Full 5-step orchestrated deployment
+  deploy.sh                            # Full 6-step orchestrated deployment
   teardown.sh                          # Reverse-order resource cleanup
 docs/
   TROUBLESHOOTING.md                   # Known issues and fixes

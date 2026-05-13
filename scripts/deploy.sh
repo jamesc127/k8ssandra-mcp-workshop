@@ -36,12 +36,12 @@ fi
 
 # Step 1: StorageClass
 echo ""
-echo ">>> Step 1/5: Creating EBS gp3 StorageClass..."
+echo ">>> Step 1/6: Creating EBS gp3 StorageClass..."
 kubectl apply -f "$MANIFESTS_DIR/infra/storageclass.yaml"
 
 # Step 2: cert-manager
 echo ""
-echo ">>> Step 2/5: Installing cert-manager..."
+echo ">>> Step 2/6: Installing cert-manager..."
 helm repo add jetstack https://charts.jetstack.io 2>/dev/null || true
 helm repo update jetstack
 if helm status cert-manager -n cert-manager &>/dev/null; then
@@ -54,9 +54,22 @@ else
     --wait --timeout 5m
 fi
 
-# Step 3: k8ssandra-operator
+# Step 3: metrics-server
 echo ""
-echo ">>> Step 3/5: Installing k8ssandra-operator..."
+echo ">>> Step 3/6: Installing metrics-server..."
+helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/ 2>/dev/null || true
+helm repo update metrics-server
+if helm status metrics-server -n kube-system &>/dev/null; then
+  echo "    metrics-server already installed, skipping."
+else
+  helm install metrics-server metrics-server/metrics-server \
+    --namespace kube-system \
+    --wait --timeout 2m
+fi
+
+# Step 4: k8ssandra-operator
+echo ""
+echo ">>> Step 4/6: Installing k8ssandra-operator..."
 helm repo add k8ssandra https://helm.k8ssandra.io/stable 2>/dev/null || true
 helm repo update k8ssandra
 if helm status k8ssandra-operator -n default &>/dev/null; then
@@ -67,9 +80,9 @@ else
     --wait --timeout 5m
 fi
 
-# Step 4: K8ssandraCluster
+# Step 5: K8ssandraCluster
 echo ""
-echo ">>> Step 4/5: Deploying Cassandra cluster..."
+echo ">>> Step 5/6: Deploying Cassandra cluster..."
 kubectl apply -f "$MANIFESTS_DIR/cassandra/k8ssandra-cluster.yaml"
 echo "    Waiting for Cassandra pods to be ready (this may take 3-5 minutes)..."
 kubectl wait --for=condition=ready pod \
@@ -77,9 +90,9 @@ kubectl wait --for=condition=ready pod \
   -n default \
   --timeout=600s 2>/dev/null || echo "    (Pods still starting — check with: kubectl get pods -l app.kubernetes.io/name=cassandra)"
 
-# Step 5: easy-cass-mcp + NoSQLBench
+# Step 6: easy-cass-mcp + NoSQLBench
 echo ""
-echo ">>> Step 5/5: Deploying easy-cass-mcp and NoSQLBench..."
+echo ">>> Step 6/6: Deploying easy-cass-mcp and NoSQLBench..."
 kubectl apply -f "$MANIFESTS_DIR/apps/easy-cass-mcp-deployment.yaml"
 kubectl apply -f "$MANIFESTS_DIR/apps/easy-cass-mcp-service.yaml"
 kubectl apply -f "$MANIFESTS_DIR/loadtest/nosqlbench-configmap.yaml"

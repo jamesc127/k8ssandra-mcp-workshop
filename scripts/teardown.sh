@@ -37,6 +37,10 @@ echo ">>> Uninstalling k8ssandra-operator..."
 helm uninstall k8ssandra-operator -n default --ignore-not-found 2>/dev/null || true
 
 echo ""
+echo ">>> Uninstalling metrics-server..."
+helm uninstall metrics-server -n kube-system --ignore-not-found 2>/dev/null || true
+
+echo ""
 echo ">>> Uninstalling cert-manager..."
 helm uninstall cert-manager -n cert-manager --ignore-not-found 2>/dev/null || true
 kubectl delete namespace cert-manager --ignore-not-found
