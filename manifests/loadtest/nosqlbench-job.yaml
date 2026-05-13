@@ -7,6 +7,12 @@
 # Uses threads=400 explicitly — threads=auto picks too few threads to
 # sustain six-figure throughput regardless of cyclerate.
 #
+# Uses errors=count on rampup and main so transient errors (e.g. driver
+# timeouts during chaos events like rolling restarts or pod failures)
+# are recorded in metrics but do not abort the activity. The cqld4
+# adapter's default error handler is "stop", which aborts the whole
+# scenario on the first error — wrong default for chaos testing.
+#
 # To re-run, delete the old job first:
 #   kubectl delete job nosqlbench-load -n default
 #   kubectl apply -f nosqlbench-job.yaml
@@ -77,10 +83,10 @@ spec:
               $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:schema threads=1 host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD
               echo ""
               echo "Phase 2: Rampup - loading 500k rows at 100k ops/sec"
-              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:rampup host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=500k cyclerate=100000 threads=400 --progress console:5s
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:rampup host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=500k cyclerate=100000 threads=400 errors=count --progress console:5s
               echo ""
               echo "Phase 3: Main workload - 1 hour mixed read/write at 100k ops/sec"
-              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=360M cyclerate=100000 threads=400 --progress console:10s
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=360M cyclerate=100000 threads=400 errors=count --progress console:10s
               echo ""
               echo "=== Workload complete ==="
           resources:
