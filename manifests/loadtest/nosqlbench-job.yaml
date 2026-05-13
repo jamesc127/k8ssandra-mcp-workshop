@@ -1,8 +1,11 @@
 # NoSQLBench Load Test Job
 # Runs a 3-phase CQL key-value workload:
 #   1. Schema creation (keyspace + table)
-#   2. Rampup: Load 500k rows
-#   3. Main: 30 minutes of mixed 50/50 read/write at 1000 ops/sec
+#   2. Rampup: Load 500k rows at 100k ops/sec (~5s)
+#   3. Main: 5 minutes of mixed 50/50 read/write at 100k ops/sec
+#
+# Uses threads=400 explicitly — threads=auto picks too few threads to
+# sustain six-figure throughput regardless of cyclerate.
 #
 # To re-run, delete the old job first:
 #   kubectl delete job nosqlbench-load -n default
@@ -56,17 +59,17 @@ spec:
               echo "Phase 1: Schema creation"
               $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:schema threads=1 host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD
               echo ""
-              echo "Phase 2: Rampup - loading 500k rows at 5k ops/sec"
-              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:rampup host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=500k cyclerate=5000 threads=auto --progress console:5s
+              echo "Phase 2: Rampup - loading 500k rows at 100k ops/sec"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:rampup host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=500k cyclerate=100000 threads=400 --progress console:5s
               echo ""
-              echo "Phase 3: Main workload - 30 min mixed read/write at 10k ops/sec"
-              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=18000000 cyclerate=10000 threads=auto --progress console:10s
+              echo "Phase 3: Main workload - 5 min mixed read/write at 100k ops/sec"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=30000000 cyclerate=100000 threads=400 --progress console:10s
               echo ""
               echo "=== Workload complete ==="
           resources:
             requests:
-              memory: "4Gi"
+              memory: "2Gi"
               cpu: "4"
             limits:
-              memory: "8Gi"
+              memory: "4Gi"
               cpu: "8"
