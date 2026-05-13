@@ -153,6 +153,58 @@ This removes all workshop resources in reverse order. To delete the EKS cluster 
 eksctl delete cluster --name k8ssandra-cluster --region us-east-1
 ```
 
+## Workshop Findings
+
+Three real-world scenarios validated during a sustained 100k TPS run, captured here so users (and future Claude sessions) can see what to expect.
+
+### 1. Noisy-neighbor latency (and how the defaults defend against it)
+
+**Symptom:** During an initial run, one Cassandra pod showed **~4× higher read latency** than its peers (172 µs vs ~42 µs). Writes were nearly unaffected.
+
+**Diagnosis:** The NoSQLBench pod and that Cassandra pod were scheduled onto the same EC2 instance. Both were `BestEffort` QoS, so neither had guaranteed CPU shares. The shared L3 cache and scheduling jitter degraded the read path disproportionately — writes are CPU-cheap (CommitLog + memtable), but reads exercise key cache, bloom filter, memtable/SSTable scan, and deserialization, which are all CPU- and cache-sensitive.
+
+**Defaults in this repo (`manifests/cassandra/k8ssandra-cluster.yaml`, `manifests/loadtest/nosqlbench-job.yaml`):**
+- Cassandra pods declare `resources.requests: cpu=4, memory=3Gi` → `Burstable` QoS, equal cpu.shares vs NoSQLBench (also requests `cpu=4`).
+- NoSQLBench Job declares `preferredDuringSchedulingIgnoredDuringExecution` pod anti-affinity against `app.kubernetes.io/name=cassandra` (weight 100). Soft, not required, because a fully-scaled cluster (6 EKS nodes / 6 Cassandra pods) leaves no Cassandra-free node.
+
+**Measured outcome under the worst case (forced co-location after scaling to 6 Cassandra pods on 6 EKS nodes):**
+
+| Pod | Co-located with NB? | Read latency (avg) |
+|---|---|---|
+| Isolated pods | no | 44–66 µs |
+| Co-located pod (was 172 µs before fix) | yes | **79 µs** |
+
+Co-location penalty dropped from **~4×** to **~1.3×** — a ~85% reduction. When the scheduler can find a Cassandra-free node, the penalty is zero.
+
+### 2. Elastic scale-up under load
+
+We patched `K8ssandraCluster.spec.cassandra.datacenters[0].size` from 3 to 6 mid-test:
+
+```bash
+kubectl patch k8ssandracluster demo -n default --type=json \
+  -p '[{"op":"replace","path":"/spec/cassandra/datacenters/0/size","value":6}]'
+```
+
+(Strategic-merge patches are rejected by the operator's validating webhook because they overwrite the datacenters array and drop required fields like `storageConfig`. Use JSON patch to target the specific field.)
+
+Throughout the ~8 minute scale-up:
+- 100k ops/sec rate held to within 1% (samples spanned 99,499 – 100,574 ops/sec)
+- Three new pods (sts-3, sts-4, sts-5) bootstrapped streaming data from the originals
+- Per-pod CPU on the originals dropped 17–22% as new pods came online — work rebalancing in real time
+- `nodetool status` showed ownership transition: 60% per pod (5 nodes mid-join) → 50% per pod (6 nodes settled). Perfect for RF=3.
+- Zero dropped queries, zero `LOCAL_QUORUM` violations
+
+### 3. Pod-failure resilience
+
+We force-killed a long-running Cassandra pod (`--grace-period=0 --force`) mid-test to simulate a node crash with no graceful drain. Observed:
+- **Rate held at 100k throughout** — `RF=3 + LOCAL_QUORUM` means 2 healthy replicas always satisfy quorum.
+- A few transient driver warnings (`ConnectionInitException` while the cqld4 driver refreshed topology) but **zero failed queries**.
+- The StatefulSet controller recreated the pod, which mounted the same PVC (same Host ID) and rejoined the ring in ~45s.
+- No bootstrap streaming needed — because the data was already on disk, Cassandra saw "the same node coming back from a brief outage."
+- The 5 surviving pods absorbed the lost pod's share with a ~1 core CPU bump each.
+
+This is the standard `RF=3 + LOCAL_QUORUM + StatefulSet + PVC` resilience story — but it's worth seeing it work in practice.
+
 ## Directory Structure
 
 ```
