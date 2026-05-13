@@ -26,6 +26,23 @@ spec:
         app: nosqlbench
     spec:
       restartPolicy: OnFailure
+      # Prefer to schedule on a node that is NOT running a Cassandra pod.
+      # Avoids noisy-neighbor latency (sustained co-location with Cassandra
+      # was observed to inflate p50 read latency 3-4x on the co-located node).
+      # Soft (preferred) instead of hard (required) so the pod can still
+      # schedule when every node is running a Cassandra pod — in that case
+      # the scheduler picks the least-loaded one.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values: ["cassandra"]
+                topologyKey: kubernetes.io/hostname
       volumes:
         - name: workload
           configMap:

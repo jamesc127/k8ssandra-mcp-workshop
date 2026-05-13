@@ -18,6 +18,10 @@ spec:
             resources:
               requests:
                 storage: 5Gi
+        resources:
+          requests:
+            cpu: "1"
+            memory: "3Gi"
         config:
           jvmOptions:
             heapSize: 2G
