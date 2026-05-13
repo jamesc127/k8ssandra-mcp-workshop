@@ -20,7 +20,7 @@ spec:
                 storage: 5Gi
         resources:
           requests:
-            cpu: "1"
+            cpu: "4"
             memory: "3Gi"
         config:
           jvmOptions:

@@ -11,10 +11,16 @@ iam:
 
 managedNodeGroups:
   - name: cassandra-workers
-    instanceType: m5.xlarge
-    desiredCapacity: 3
-    minSize: 3
-    maxSize: 4
+    # m5.4xlarge (16 vCPU / 64 GiB) sized for the 100k TPS load test default.
+    # Cassandra resources.requests is 4 CPU per pod; m5.xlarge (4 vCPU) cannot
+    # fit one Cassandra pod plus a NoSQLBench pod without preempting Cassandra.
+    instanceType: m5.4xlarge
+    # 6 nodes supports the 3-pod Cassandra default plus the 3→6 scale-up demo.
+    # NB pod anti-affinity can place it on a Cassandra-free node when only 3
+    # Cassandra pods are running.
+    desiredCapacity: 6
+    minSize: 6
+    maxSize: 8
     privateNetworking: true  # Nodes in private subnets only — prevents ImagePullBackOff
     volumeSize: 50
     volumeType: gp3
