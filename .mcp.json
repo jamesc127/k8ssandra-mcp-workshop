@@ -4,7 +4,7 @@
       "command": "npx",
       "args": [
         "mcp-remote",
-        "http://a2838306747244891bf10b65a7a4d232-1181838470.us-east-1.elb.amazonaws.com:8000/mcp/",
+        "http://ac14b093abe8d42af85ef924753b186a-671196048.us-east-1.elb.amazonaws.com:8000/mcp/",
         "--allow-http"
       ]
     }
