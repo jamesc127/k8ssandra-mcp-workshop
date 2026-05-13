@@ -151,6 +151,10 @@ if [ -n "$NLB_HOST" ]; then
         "http://$NLB_HOST:8000/mcp/",
         "--allow-http"
       ]
+    },
+    "mcp-server-chart": {
+      "command": "npx",
+      "args": ["-y", "@antv/mcp-server-chart"]
     }
   }
 }

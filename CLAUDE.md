@@ -53,6 +53,7 @@ docs/
 - Use `npx mcp-remote http://<NLB>:8000/mcp/ --allow-http` as stdio bridge
 - Non-HTTPS endpoints require `--allow-http` flag
 - `npx`/`kubectl`/`aws` may need symlinking to `/usr/local/bin` for Claude Desktop's PATH
+- Each redeploy provisions a fresh NLB with a new hostname. `scripts/deploy.sh` rewrites the project `.mcp.json` automatically (used by Claude Code), but `~/Library/Application Support/Claude/claude_desktop_config.json` is **not** auto-updated — the user must update the `easy-cass-mcp` URL there after every redeploy.
 
 ### NoSQLBench
 - Docker image binary is at `/nb5.jar`, invoke via `java -jar /nb5.jar`

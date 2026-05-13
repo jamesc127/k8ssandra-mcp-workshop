@@ -7,6 +7,10 @@
         "http://ac14b093abe8d42af85ef924753b186a-671196048.us-east-1.elb.amazonaws.com:8000/mcp/",
         "--allow-http"
       ]
+    },
+    "mcp-server-chart": {
+      "command": "npx",
+      "args": ["-y", "@antv/mcp-server-chart"]
     }
   }
 }
