@@ -23,8 +23,8 @@
 |  |  |                                                                        |  | |
 |  |  |  Managed Node Group: cassandra-workers                                 |  | |
 |  |  |  +------------------------+  +------------------------+  +-----------+ |  | |
-|  |  |  | m5.xlarge              |  | m5.xlarge              |  | m5.xlarge | |  | |
-|  |  |  | 4 vCPU / 16 GiB       |  | 4 vCPU / 16 GiB       |  | 4 vCPU /  | |  | |
+|  |  |  | m5.4xlarge              |  | m5.4xlarge              |  | m5.4xlarge | |  | |
+|  |  |  | 16 vCPU / 64 GiB       |  | 16 vCPU / 64 GiB       |  | 4 vCPU /  | |  | |
 |  |  |  | 50 GiB gp3 root       |  | 50 GiB gp3 root       |  | 16 GiB    | |  | |
 |  |  |  | ip-192-168-118-142     |  | ip-192-168-65-41       |  | 50 GiB gp3| |  | |
 |  |  |  | privateNetworking:true |  | privateNetworking:true |  | ip-192-168| |  | |
@@ -232,16 +232,17 @@ Headless Services (ClusterIP: None)
 ## 5. Deployment Pipeline (deploy.sh)
 
 ```
-Step 1             Step 2              Step 3               Step 4              Step 5
-StorageClass       cert-manager        k8ssandra-operator   K8ssandraCluster    Apps
-+----------+       +-------------+     +---------------+    +-------------+     +-------------+
-| ebs-gp3  |------>| Helm chart  |---->| Helm chart    |--->| CR: demo    |---->| easy-cass-  |
-| SC for   |       | namespace:  |     | namespace:    |    | 3-node ring |     |   mcp       |
-| EBS CSI  |       | cert-manager|     | default       |    | dc1, 5Gi    |     | nosqlbench  |
-|          |       | CRDs + pods |     | Operators +   |    | 512M heap   |     |   configmap |
-|          |       |             |     | webhooks      |    | ~3-5 min    |     | NLB wait    |
-+----------+       +-------------+     +---------------+    +-------------+     +-------------+
-   instant           ~2 min              ~2 min               ~5 min              ~3 min
+Step 1         Step 2         Step 3          Step 4              Step 5             Step 6
+StorageClass   cert-manager   metrics-server  k8ssandra-operator  K8ssandraCluster   Apps
++---------+    +-----------+  +-----------+   +---------------+   +-------------+    +-----------+
+| ebs-gp3 |--->| Helm chart|->| Helm chart|-->| Helm chart    |-->| CR: demo    |--->| easy-cass-|
+| SC for  |    | ns:       |  | ns:       |   | ns: default   |   | 3-pod ring  |    |   mcp     |
+| EBS CSI |    | cert-mgr  |  | kube-     |   | Operators +   |   | dc1, 5Gi    |    | nosqlbench|
+|         |    | CRDs+pods |  | system    |   | webhooks      |   | 2G heap     |    | configmap |
+|         |    |           |  | kubectl   |   |               |   | ~3-5 min    |    | NLB wait  |
+|         |    |           |  | top works |   |               |   |             |    |           |
++---------+    +-----------+  +-----------+   +---------------+   +-------------+    +-----------+
+  instant         ~2 min        ~30 sec          ~2 min              ~5 min             ~3 min
 
-                           Total fresh deploy: ~12-15 min (+ EKS cluster: ~15-20 min)
+                          Total fresh deploy: ~13-15 min (+ EKS cluster: ~15-20 min)
 ```

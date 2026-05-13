@@ -71,7 +71,7 @@ kubectl config current-context
 eksctl create cluster -f manifests/infra/eksctl-cluster.yaml
 ```
 
-Provisions: VPC + auto-tagged subnets, 3x `m5.xlarge` managed nodes (private subnets + NAT), EBS CSI addon with IRSA, OIDC provider.
+Provisions: VPC + auto-tagged subnets, 6x `m5.4xlarge` managed nodes (private subnets + NAT), EBS CSI addon with IRSA, OIDC provider. Sized for 100k TPS load test and 3→6 Cassandra elasticity demo.
 
 Update kubeconfig after completion:
 ```bash

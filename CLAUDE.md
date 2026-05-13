@@ -6,13 +6,13 @@ Workshop repo for teaching Apache Cassandra on Amazon EKS using k8ssandra-operat
 
 ## Architecture
 
-- **EKS** cluster with managed node groups (3x `m5.xlarge` in private subnets)
-- **3-node Cassandra ring** (datacenter: `dc1`) managed by k8ssandra-operator
+- **EKS** cluster with managed node groups (6x `m5.4xlarge` in private subnets; sized for 100k TPS load test and 3→6 Cassandra scale-up demo)
+- **3-node Cassandra ring** (datacenter: `dc1`) managed by k8ssandra-operator, with `resources.requests` set (Burstable QoS) for noisy-neighbor protection
 - **k8ssandra-operator** installed to `default` namespace (required for webhook alignment)
 - **easy-cass-mcp** deployed in-cluster, exposed via internet-facing NLB on port 8000
 - **cert-manager** handles TLS for operator webhooks
 - **metrics-server** installed in `kube-system` for `kubectl top` node/pod metrics
-- **NoSQLBench** provides on-demand CQL load testing
+- **NoSQLBench** provides on-demand CQL load testing (default: 1-hour run at 100k ops/sec) with pod anti-affinity to avoid Cassandra co-location
 
 ## Key Files
 
@@ -20,7 +20,7 @@ Workshop repo for teaching Apache Cassandra on Amazon EKS using k8ssandra-operat
 manifests/
   infra/eksctl-cluster.yaml             # EKS ClusterConfig (node groups, EBS CSI addon, OIDC)
   infra/storageclass.yaml               # EBS gp3 (ebs.csi.aws.com)
-  cassandra/k8ssandra-cluster.yaml      # K8ssandraCluster CR (3 nodes, 512M heap, 5Gi storage)
+  cassandra/k8ssandra-cluster.yaml      # K8ssandraCluster CR (3 nodes default, 2G heap, 5Gi storage, 4 CPU / 3Gi requests)
   apps/easy-cass-mcp-*.yaml             # MCP server deployment + NLB service
   loadtest/nosqlbench-*.yaml            # CQL key-value workload + Job
 scripts/
@@ -42,7 +42,7 @@ docs/
 ### K8ssandra Operator
 - Must be installed to `--namespace default` — the Helm chart deploys workloads to the release namespace, and webhook configs must match
 - K8ssandraCluster CR name is `demo`, which generates the `demo-superuser` secret
-- Cassandra version: 4.0.1
+- Cassandra version: 4.1.3
 
 ### Networking
 - easy-cass-mcp requires `FASTMCP_SERVER_HOST=0.0.0.0` to accept NLB traffic (FastMCP defaults to 127.0.0.1)
@@ -70,5 +70,8 @@ Scripts accept configuration via environment variables:
 
 1. NLB fails to provision → cluster not created with provided ClusterConfig (subnets not tagged)
 2. Webhook errors on K8ssandraCluster creation → operator installed in wrong namespace
-3. easy-cass-mcp unreachable via NLB → FastMCP binding to localhost instead of 0.0.0.0
-4. NoSQLBench `nb5: not found` → use `java -jar /nb5.jar`, not `nb5` directly
+3. K8ssandraCluster patch rejected with "storageConfig must be defined" → strategic-merge replaced the datacenter array; use JSON patch targeting `/spec/cassandra/datacenters/0/size` instead
+4. easy-cass-mcp unreachable via NLB → FastMCP binding to localhost instead of 0.0.0.0
+5. NoSQLBench `nb5: not found` → use `java -jar /nb5.jar`, not `nb5` directly
+6. NoSQLBench can't reach target rate above ~60k ops/sec → `threads=auto` picks too few; set `threads=400` (or higher) explicitly
+7. One Cassandra pod shows 3-4× higher read latency than peers → NB pod is co-located on the same EC2 node; soft anti-affinity in the job spec plus Cassandra resource requests address this
