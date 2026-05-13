@@ -123,6 +123,8 @@ Get the NLB hostname and substitute it into the config above:
 kubectl get svc easy-cass-mcp -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
 ```
 
+> **Re-deploy note:** Every time you tear down and redeploy the workshop, a new NLB is provisioned with a different hostname. The project's `.mcp.json` (used by Claude Code) is rewritten automatically by `scripts/deploy.sh`, but `claude_desktop_config.json` (used by Claude Desktop) is **not** — you'll need to manually update the `easy-cass-mcp` URL there after each redeploy.
+
 ### 4. Run a Load Test (Optional)
 
 ```bash
