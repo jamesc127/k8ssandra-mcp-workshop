@@ -56,17 +56,17 @@ spec:
               echo "Phase 1: Schema creation"
               $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:schema threads=1 host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD
               echo ""
-              echo "Phase 2: Rampup - loading 500k rows"
-              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:rampup host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=500k threads=auto --progress console:5s
+              echo "Phase 2: Rampup - loading 500k rows at 5k ops/sec"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:rampup host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=500k cyclerate=5000 threads=auto --progress console:5s
               echo ""
-              echo "Phase 3: Main workload - 30 min mixed read/write at 1000 ops/sec"
-              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=1800000 cyclerate=1000 threads=auto --progress console:10s
+              echo "Phase 3: Main workload - 30 min mixed read/write at 10k ops/sec"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=18000000 cyclerate=10000 threads=auto --progress console:10s
               echo ""
               echo "=== Workload complete ==="
           resources:
             requests:
-              memory: "1Gi"
-              cpu: "500m"
+              memory: "4Gi"
+              cpu: "4"
             limits:
-              memory: "2Gi"
-              cpu: "1"
+              memory: "8Gi"
+              cpu: "8"
