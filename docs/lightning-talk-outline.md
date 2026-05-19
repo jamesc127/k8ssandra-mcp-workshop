@@ -1,8 +1,12 @@
 # From YAML Hell to AI Ops: Managing Cassandra with MCP and Skills
 
-**Format:** 15-minute lightning talk
+**Format:** 20-minute talk + live demo
 **Repo:** k8ssandra-workshop
-**Style:** Heavy live demo — Claude Code open on screen throughout Acts 3 & 4
+**Companion repos:**
+- MCP server: [rustyrazorblade/easy-cass-mcp](https://github.com/rustyrazorblade/easy-cass-mcp)
+- Skills: [rustyrazorblade/skills](https://github.com/rustyrazorblade/skills)
+
+**Style:** Heavy live demo — Claude Code open on screen throughout Parts 3, 4, and 5
 
 ---
 
@@ -46,28 +50,40 @@
 
 ---
 
-## Part 3 (~4 min) — MCP + Live Demo: Giving AI Eyes on Your Cluster
+## Part 3 (~3 min) — easy-cass-mcp: Giving AI Eyes on Your Cluster
 
-- **EKS Architecture Overview**
-  - Show slides
+- **EKS Architecture Overview** — show slides
 - **What is MCP?** (30 seconds)
   - Model Context Protocol: a standard for giving AI models access to external tools
   - Server exposes tools → Claude calls them → results flow back as context
-- **easy-cass-mcp:** a domain-specific MCP server that speaks CQL, deployed in-cluster
+- **easy-cass-mcp** ([rustyrazorblade/easy-cass-mcp](https://github.com/rustyrazorblade/easy-cass-mcp)):
+  - Domain-specific MCP server that speaks CQL fluently, deployed in-cluster
   - Architecture: Claude Code → internet-facing NLB → easy-cass-mcp pod → Cassandra pods
-- **The "containers" MCP gotcha — before the demo:**
-  - Tried a generic Kubernetes MCP server first — it dumps the entire cluster state into the context window
-  - A single "get pods" returns thousands of tokens: labels, annotations, status conditions, container specs
-  - The model drowns in metadata; easy-cass-mcp returns exactly what's needed, nothing more
-  - **Takeaway: MCP server design matters as much as MCP server existence. Build narrow, not wide.**
+  - The tools that do the work:
+
+    | Tool | What it does |
+    |---|---|
+    | `query_all_nodes(cql)` | Fans out a CQL query to every replica, labels results by node — essential for the `system_views.*` per-node virtual tables |
+    | `query_node(addr, cql)` | Targets a single replica for deep dives |
+    | `query_system_table(keyspace, table)` | Curated access to system keyspaces (peers, local, sstable_activity, ...) |
+    | `get_create_table(keyspace, table)` | Pulls canonical schema — feeds data-model analysis |
+    | `analyze_table_optimizations(keyspace, table)` | Version-aware compaction recommendations |
+
+- **Build narrow, not wide:**
+  - Tried a generic Kubernetes MCP server first — a single `get pods` dumps thousands of tokens of labels, annotations, status conditions
+  - easy-cass-mcp returns only what's relevant, structured by node — Claude doesn't drown in metadata
+  - **Takeaway: MCP server *design* matters as much as MCP server existence.**
+- **Time-to-first-insight:**
+  - Traditional stack (JMX exporter sidecars + Prometheus + Grafana dashboards + alerting) = half a day, minimum
+  - MCP + Claude Code = seconds, data lands as structured tables already labeled by node
 
 ### Live Demo — Node Restart Under Load
 
-_Setup: NoSQLBench already running — 1,000 ops/sec, 50/50 read/write, RF=3, LOCAL_QUORUM_
+_Setup: NoSQLBench already running — 100k ops/sec, 50/50 read/write, RF=3, LOCAL_QUORUM_
 
 **Step 1 — Ask Claude: "Is the cluster healthy?"**
-- Claude calls `local_read_latency` and `local_write_latency` on all 3 nodes via easy-cass-mcp
-- Show live: even read distribution (~350–400 ops/s per node), sub-millisecond latency everywhere, load test humming
+- Claude calls `local_read_latency` and `local_write_latency` on all nodes via easy-cass-mcp
+- Show live: even distribution, sub-millisecond latency everywhere, load test humming
 
 **Step 2 — Kill a node, live, on screen:**
 ```
@@ -76,17 +92,16 @@ kubectl delete pod demo-dc1-default-sts-1
 - Pod gone. StatefulSet immediately schedules a replacement.
 
 **Step 3 — Ask Claude: "What do you see now?"**
-- Claude queries latency tables again — surfaces the anomaly:
-  - Two nodes: counts in the hundreds of thousands, rate ~400 ops/s, p99 ~0ms
-  - New node: count only ~14k, rate ~140 ops/s ramping up, p99 slightly elevated
-- Claude interprets: _"One node has significantly lower operation counts than its peers — consistent with a recent restart. Latency is normal and the count gap will close as the driver rebalances connections. The load test was uninterrupted throughout."_
-- New pod IP assigned automatically — gossip handled it, no config change needed
+- Claude queries the latency tables again — surfaces the anomaly:
+  - Surviving nodes: counts in the hundreds of thousands, p99 ~0ms
+  - New node: count only ~14k, rate ramping up, p99 slightly elevated
+- Claude interprets: _"One node has significantly lower operation counts than its peers — consistent with a recent restart. The gap will close as the driver rebalances. Load test uninterrupted."_
 
-**The point:** in the old world, that was a scheduled maintenance window with a runbook and a Slack thread. Here it's a 52-second demo with a natural language debrief.
+**The point:** in the old world, that was a scheduled maintenance window with a runbook and a Slack thread. Here it's a 52-second demo with a natural-language debrief.
 
 ---
 
-## Part 4 (~3 min) — Skills: Teaching the Agent, Not Just Connecting It
+## Part 4 (~5 min) — Skills: Cassandra Expertise as Markdown
 
 - **What is a skill?** A markdown file with trigger conditions and instructions, loaded into Claude Code's context on-demand — no running service, no deployment, just a markdown file
 - **MCP vs. Skills — head to head:**
@@ -101,24 +116,77 @@ kubectl delete pod demo-dc1-default-sts-1
   | **Best for** | Real-time data, actions with side effects | Runbooks, deployment playbooks, troubleshooting |
   | **Limitation** | Generic servers bloat context; needs infra | No live data access; static knowledge only |
 
-### Live Demo — Skill Trigger on Screen
-
-_Ask Claude: "scale the Cassandra cluster to 4 nodes"_
-
-- `k8ssandra-workshop` skill auto-triggers from the request
-- Claude reads the skill, runs the `kubectl patch` command directly — no intermediate tooling
-- Show the skill file briefly: it's just markdown — trigger description, a set of procedures, kubectl commands
-- **The insight:** this is your runbook, but Claude follows it
-
-- **Two skills, two scopes — and that's the point:**
-  - `cassandra-k8s-deploy`: general expertise, taken everywhere — EKS, GKE, AKS, Medusa backups, Reaper repairs, TLS, auth
-  - `k8ssandra-workshop`: project-specific runbook for this repo — exact manifests, namespaces, MCP tool selection, load test procedures
-  - Same mechanism, different scope: just like how an engineer carries general expertise into every project, then writes a project-specific runbook on top
-  - `k8ssandra-workshop` explicitly supersedes `cassandra-k8s-deploy` when working in this repo — no ambiguity
 - **MCP and skills together:**
   - MCP = data plane access (what's happening right now)
   - Skills = control plane knowledge (what to do about it)
-  - Together: the skill tells Claude *how* to scale; MCP lets Claude *verify* it worked
+  - Together: the skill tells Claude *how*; MCP lets Claude *verify*
+
+### Three Cassandra skills, three lenses ([rustyrazorblade/skills](https://github.com/rustyrazorblade/skills))
+
+All three operate on the same MCP-collected data, each with a different stance:
+
+| Skill | Lens | Output style |
+|---|---|---|
+| `/diagnose` | USE method (Utilization / Saturation / Errors) across all nodes | "Here's what's wrong (or right) and why" |
+| `/optimize` | Tier-ranked tuning: `cassandra.yaml` + `ALTER TABLE` deltas | "Apply these in order, expected impact: X" |
+| `/expert` | Opinionated big-picture — anti-patterns, trade-offs, production-readiness | "Here's what I'd actually do, and why" |
+
+These aren't generic "ask an LLM" wrappers. They apply USE-method diagnostics, published Cassandra-community stances on `num_tokens` and compaction, and version-specific C* 5 features (UCS, Trie memtables, BTI, Zero-Copy Streaming) — codified once, applied every time.
+
+### Live Demo — The Analysis Loop
+
+_Setup: NoSQLBench has been running at 100k ops/sec for an hour; cluster has been scaled live 3 → 6 → 9 nodes during the run_
+
+Loose talking points — find the live moments as they come, but cover:
+
+- **`/diagnose` fans out via `query_all_nodes`** against `system_views.*` and compares all 9 nodes. The headline find: pods pegged at 6.0/6.0 CPU, but EC2 hosts at 30–70%, and *zero pending thread-pool tasks*. That's CFS throttling at the cgroup level — invisible to `tpstats`, invisible to flat dashboards. It accounts for the 8k-ops/sec shortfall between achieved (~92k) and target (100k).
+
+- **`/optimize` tier-ranks the fix.** Highlight the Tier-1 surprise: the operator default ships `key_cache_size_in_mb: 0`, but the table requests `caching: {keys: ALL}`. The table-level setting is silently meaningless without the YAML setting. Also call out: drop compression chunk size from 16 KiB to 4 KiB (250× I/O amp on point lookups), raise the CPU limit. Tier 2 covers `num_tokens: 16 → 4`, Trie memtables, `commitlog_sync_period`. Expected total impact: ~92k → ~110–120k ops/sec on the same hardware.
+
+- **`/expert` quotables** to drop in as fits:
+  - "softPodAntiAffinity is defensible only for dev/CI/workshop — not for any RF=3 cluster where availability matters."
+  - "In 2018 this was a multi-day project; in 2026 it's a kubectl one-liner."
+
+**The durable insight: the operator defaults shipped five production tunings missed, and the MCP-plus-skills loop surfaced all of them in under an hour.** That's expert-grade analysis, automated.
+
+- **Two skills, two scopes — same mechanism:**
+  - `cassandra-k8s-deploy`: general expertise, taken everywhere — EKS/GKE/AKS, Medusa, Reaper, TLS, auth
+  - `k8ssandra-workshop`: project-specific runbook for this repo — exact manifests, namespaces, MCP tool selection, load-test procedures
+  - `k8ssandra-workshop` explicitly supersedes `cassandra-k8s-deploy` when in this repo — no ambiguity
+
+---
+
+## Part 5 (~3 min) — Scale Under Load: The Headline "Just Works" Moment
+
+If you take one thing from this session: **scaling Apache Cassandra under load is no longer an event.**
+
+- **Live, on screen, while NoSQLBench is hammering at 100k ops/sec:**
+
+  ```
+  kubectl patch k8ssandracluster demo --type=json \
+    -p='[{"op":"replace","path":"/spec/cassandra/datacenters/0/size","value":9}]'
+  ```
+
+- **Six minutes later: 9 nodes in the ring. While that happened:**
+  - 3 → 6 added 3 nodes in ~5.5 minutes, one bootstrap at a time
+  - 6 → 9 added 3 more in ~5.4 minutes
+  - Each new node streamed 42–138 MB of data in 6.7–9.8 seconds via Zero-Copy Streaming
+  - Existing nodes kept serving 100k ops/sec — zero NB errors throughout
+  - Driver token-aware policy picked up new coordinators within seconds of gossip propagation
+  - RF=3 maintained continuously
+
+- **Throughput climbed roughly linearly:**
+  - ~32k ops/sec (3 nodes) → ~85k (6 nodes) → ~105k (9 nodes, after driver pool warmed)
+  - Exactly the shape it should be
+
+- **What made this possible** — and worth naming explicitly:
+  - The **operator** managed the orchestration and PV lifecycle
+  - **Zero-Copy Streaming** made bootstraps complete in seconds, not hours
+  - **MCP** gave us live observation through the scale event
+  - **Skills** gave us the framework to reason about whether what we saw was healthy
+  - All from a single Claude Code chat — no Grafana, no JMX hand-rolling, no kubectl-exec loops
+
+The operator alone manages the cluster. The full loop *operates* it.
 
 ---
 
@@ -129,4 +197,8 @@ _Ask Claude: "scale the Cassandra cluster to 4 nodes"_
   1. Build domain-specific MCP servers — not generic ones. Context windows are precious.
   2. Turn your runbooks into skills. If you wrote it down, Claude can follow it.
   3. Combine both: MCP for observation, skills for action.
-- Link to repo + Q&A
+- **Links:**
+  - This workshop repo
+  - MCP server: [rustyrazorblade/easy-cass-mcp](https://github.com/rustyrazorblade/easy-cass-mcp)
+  - Skills: [rustyrazorblade/skills](https://github.com/rustyrazorblade/skills)
+- Q&A
