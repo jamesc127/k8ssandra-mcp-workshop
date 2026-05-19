@@ -20,7 +20,7 @@ Workshop repo for teaching Apache Cassandra on Amazon EKS using k8ssandra-operat
 manifests/
   infra/eksctl-cluster.yaml             # EKS ClusterConfig (node groups, EBS CSI addon, OIDC)
   infra/storageclass.yaml               # EBS gp3 (ebs.csi.aws.com)
-  cassandra/k8ssandra-cluster.yaml      # K8ssandraCluster CR (3 nodes default, 2G heap, 5Gi storage, 4 CPU / 3Gi requests)
+  cassandra/k8ssandra-cluster.yaml      # K8ssandraCluster CR (3 nodes default, 2G heap, 5Gi storage, 4-6 CPU / 3-6Gi req/limit, softPodAntiAffinity)
   apps/easy-cass-mcp-*.yaml             # MCP server deployment + NLB service
   loadtest/nosqlbench-*.yaml            # CQL key-value workload + Job
 scripts/
@@ -42,7 +42,7 @@ docs/
 ### K8ssandra Operator
 - Must be installed to `--namespace default` — the Helm chart deploys workloads to the release namespace, and webhook configs must match
 - K8ssandraCluster CR name is `demo`, which generates the `demo-superuser` secret
-- Cassandra version: 4.1.3
+- Cassandra version: 5.0.8
 
 ### Networking
 - easy-cass-mcp requires `FASTMCP_SERVER_HOST=0.0.0.0` to accept NLB traffic (FastMCP defaults to 127.0.0.1)
