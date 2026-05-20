@@ -36,7 +36,7 @@ Deploy a production-style Apache Cassandra cluster on Amazon EKS using k8ssandra
 
 | Component | Version | Purpose |
 |-----------|---------|---------|
-| Apache Cassandra | 4.1.3 | Distributed database (3-pod ring, scales to 6 live) |
+| Apache Cassandra | 5.0.8 | Distributed database (3-pod ring, scales to 6 live) |
 | k8ssandra-operator | 1.26.0 | Cassandra lifecycle management |
 | cert-manager | v1.18.2 | TLS certificates for operator webhooks |
 | metrics-server | v0.8.0 | `kubectl top` node/pod CPU and memory |
@@ -166,6 +166,7 @@ Three real-world scenarios validated during a sustained 100k TPS run, captured h
 **Defaults in this repo (`manifests/cassandra/k8ssandra-cluster.yaml`, `manifests/loadtest/nosqlbench-job.yaml`):**
 - Cassandra pods declare `resources.requests: cpu=4, memory=3Gi` → `Burstable` QoS, equal cpu.shares vs NoSQLBench (also requests `cpu=4`).
 - NoSQLBench Job declares `preferredDuringSchedulingIgnoredDuringExecution` pod anti-affinity against `app.kubernetes.io/name=cassandra` (weight 100). Soft, not required, because a fully-scaled cluster (6 EKS nodes / 6 Cassandra pods) leaves no Cassandra-free node.
+- `cassandraYaml.dynamic_snitch_badness_threshold: 0.1` (down from the 1.0 default). At sub-millisecond latencies, the default lets the dynamic snitch ignore everything short of a 100%-worse replica, which lets a co-located hot replica become self-reinforcing. 0.1 is the documented modern recommendation and lets the snitch route reads away from a degraded replica much sooner.
 
 **Measured outcome under the worst case (forced co-location after scaling to 6 Cassandra pods on 6 EKS nodes):**
 
