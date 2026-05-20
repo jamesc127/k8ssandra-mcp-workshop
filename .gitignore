@@ -6,3 +6,4 @@
 kubeconfig
 *.pem
 *.key
+.claude/worktrees/

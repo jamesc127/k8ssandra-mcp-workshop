@@ -9,14 +9,14 @@ description: >
   credentials, or workshop teardown. Use kubectl/helm/aws Bash commands for
   Kubernetes-level operations. Use easy-cass-mcp MCP tools for all
   Cassandra-specific operations (CQL queries, schema inspection, nodetool
-  equivalents, config recommendations). This skill takes precedence over the
-  cassandra-k8s-deploy skill for any work in this repository.
+  equivalents, config recommendations).
 ---
 
 # K8ssandra Workshop Skill
 
 All commands run from the repo root. Everything lives in the `default` namespace.
-Cluster name: `k8ssandra-cluster`, region: `us-east-1` (override via `CLUSTER_NAME` / `REGION` env vars).
+
+**EKS cluster is pre-provisioned and externally managed.** Do not run `eksctl create/delete`, do not attempt to scale the node group, and do not assume the cluster name matches `manifests/infra/eksctl-cluster.yaml`. Use whatever `kubectl config current-context` reports. The cluster has 6× `m5.4xlarge` worker nodes, which is sufficient for Cassandra rings up to **9 nodes** and the 100k TPS NoSQLBench workload.
 
 ---
 
@@ -57,30 +57,18 @@ Cluster name: `k8ssandra-cluster`, region: `us-east-1` (override via `CLUSTER_NA
 ## 1. Prerequisites Check
 
 ```bash
-for cmd in kubectl helm aws eksctl; do
+for cmd in kubectl helm aws; do
   command -v $cmd && echo "$cmd: OK" || echo "$cmd: MISSING"
 done
 kubectl config current-context
+kubectl get nodes
 ```
+
+Confirm the context points at the workshop EKS cluster and all worker nodes are `Ready` before proceeding.
 
 ---
 
-## 2. EKS Cluster Creation (~15 min, one-time)
-
-```bash
-eksctl create cluster -f manifests/infra/eksctl-cluster.yaml
-```
-
-Provisions: VPC + auto-tagged subnets, 6x `m5.4xlarge` managed nodes (private subnets + NAT), EBS CSI addon with IRSA, OIDC provider. Sized for 100k TPS load test and 3→6 Cassandra elasticity demo.
-
-Update kubeconfig after completion:
-```bash
-aws eks update-kubeconfig --name k8ssandra-cluster --region us-east-1
-```
-
----
-
-## 3. Full Stack Deploy
+## 2. Full Stack Deploy
 
 Run the orchestrated script (confirms kubectl context interactively):
 ```bash
@@ -135,9 +123,14 @@ kubectl wait --for=condition=available deployment/easy-cass-mcp \
   -n default --timeout=120s
 ```
 
+> **Note:** easy-cass-mcp commonly CrashLoopBackOffs on first deploy with "Bad credentials" — the pod started before Cassandra finished propagating the `demo-superuser` role. Fix by restarting once Cassandra is fully ready:
+> ```bash
+> kubectl rollout restart deployment/easy-cass-mcp -n default
+> ```
+
 ---
 
-## 4. Health Monitoring
+## 3. Health Monitoring
 
 ```bash
 # All pods
@@ -160,7 +153,7 @@ kubectl top pods -n default
 
 ---
 
-## 5. NLB Endpoint + Credentials (Claude Desktop Config)
+## 4. NLB Endpoint + Credentials (Claude Desktop Config)
 
 ```bash
 # NLB hostname (may take 1-3 min after deploy)
@@ -193,7 +186,7 @@ sudo ln -sf $(which npx) /usr/local/bin/npx
 
 ---
 
-## 6. Load Test Management
+## 5. Load Test Management
 
 ```bash
 # Start 3-phase load test (schema → 500k rampup → 1hr mixed 50/50 at 100,000 ops/sec)
@@ -213,10 +206,12 @@ kubectl delete job nosqlbench-load -n default
 
 ---
 
-## 7. Scale Cassandra
+## 6. Scale Cassandra
+
+The shared EKS cluster supports a Cassandra ring of **up to 9 nodes** (default deploy: 3). Do not scale beyond 9 — the worker node group is fixed and cannot be expanded.
 
 ```bash
-# Scale to N nodes (currently 3)
+# Scale to N nodes (3 ≤ N ≤ 9)
 kubectl patch k8ssandracluster demo -n default \
   --type=merge \
   -p '{"spec":{"cassandra":{"datacenters":[{"metadata":{"name":"dc1"},"size":N}]}}}'
@@ -227,14 +222,11 @@ kubectl get pods -l app.kubernetes.io/name=cassandra -n default -w
 
 ---
 
-## 8. Teardown
+## 7. Teardown
 
 ```bash
-# Remove all workshop resources (keeps EKS cluster)
+# Remove all workshop resources (Cassandra, operator, MCP, NLB) — the EKS cluster itself is externally managed and must NOT be deleted
 ./scripts/teardown.sh
-
-# Delete the EKS cluster itself (~10 min)
-eksctl delete cluster --name k8ssandra-cluster --region us-east-1
 ```
 
 ---

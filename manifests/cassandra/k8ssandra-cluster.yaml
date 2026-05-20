@@ -11,6 +11,11 @@ spec:
           name: dc1
         size: 3
         softPodAntiAffinity: true
+        # Rack-per-AZ placement was attempted (2 racks across us-east-1a/1b)
+        # but with only 2 AZs and Cassandra's default
+        # allocate_tokens_for_local_replication_factor=3, the token allocator
+        # stalled during bootstrap. Re-enable only when 3 AZs are available
+        # in the EKS node group.
         storageConfig:
           cassandraDataVolumeClaimSpec:
             storageClassName: ebs-gp3
@@ -27,5 +32,10 @@ spec:
             cpu: "6"
             memory: "6Gi"
         config:
+          cassandraYaml:
+            # Default 1.0 lets the dynamic snitch ignore all but 100%-worse
+            # replicas; at sub-ms latencies this creates a self-reinforcing
+            # hot replica. 0.1 is the documented modern recommendation.
+            dynamic_snitch_badness_threshold: 0.1
           jvmOptions:
             heapSize: 2G
