@@ -10,6 +10,10 @@
 
 ---
 
+## Part 0
+- Describe the cluster
+- Start the NB workload 
+
 ## Opening (~1 min) — The Cassandra Consultant's Journey
 
 - Speaker intro: background as a Cassandra consultant
