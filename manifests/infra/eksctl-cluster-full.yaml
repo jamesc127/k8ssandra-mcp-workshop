@@ -1,0 +1,74 @@
+# FULL PROFILE — 10 worker nodes, for the Planet Cassandra webcast.
+#
+# The default (trial) profile is eksctl-cluster.yaml. Use this one when the
+# provisioning portal will grant the full 10-node allocation.
+#
+# NOTE: this file is submitted to the provisioning portal out-of-band.
+# scripts/deploy.sh never runs eksctl — it assumes the cluster already exists.
+#
+# Node budget (10 total — exactly the portal cap):
+#   9x cassandra  — 3 per AZ, so the 3 racks are balanced 3/3/3 and the ring
+#                   runs 9 pods under hard anti-affinity, one pod per node
+#   1x loadgen    — tainted; carries the whole 200k ops/sec load generator
+#
+# There is no separate utility node at this size: Prometheus, Grafana, Reaper
+# and the operators fit inside the Cassandra nodes' headroom (cluster-wide
+# requests land at ~77% CPU / ~60% memory).
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: k8ssandra-cluster
+  region: us-east-1
+  version: "1.34"
+
+availabilityZones:
+  - us-east-1a
+  - us-east-1b
+  - us-east-1c
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  # 9 nodes across 3 AZs -> the ASG balances 3/3/3, giving 3 nodes per rack.
+  # Verify before applying the CR:
+  #   kubectl get nodes -L topology.kubernetes.io/zone,workload
+  - name: cassandra-workers
+    instanceType: m7i.4xlarge  # 16 vCPU / 64 GiB
+    desiredCapacity: 9
+    minSize: 9
+    maxSize: 9
+    availabilityZones:
+      - us-east-1a
+      - us-east-1b
+      - us-east-1c
+    privateNetworking: true
+    volumeSize: 100
+    volumeType: gp3
+    labels:
+      workload: cassandra
+    iam:
+      withAddonPolicies:
+        ebs: true
+
+  # 32 vCPU so two NoSQLBench pods at 12 CPU each can sustain 200k ops/sec.
+  - name: loadgen
+    instanceType: c7i.8xlarge  # 32 vCPU / 64 GiB
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    privateNetworking: true
+    volumeSize: 100
+    volumeType: gp3
+    labels:
+      workload: loadgen
+    taints:
+      - key: workload
+        value: loadgen
+        effect: NoSchedule
+
+addons:
+  - name: aws-ebs-csi-driver
+    wellKnownPolicies:
+      ebsCSIController: true

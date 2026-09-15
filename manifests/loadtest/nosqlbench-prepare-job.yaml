@@ -1,0 +1,83 @@
+# NoSQLBench PREPARE job — run once, well before the demo.
+#
+# Creates the schema and bulk-loads the dataset. Split out from the main load
+# job so that the main job can run multiple pods in parallel without them racing
+# on schema creation and each repeating the rampup.
+#
+# TRIAL profile: 20M rows at 100k ops/sec = ~200s, plus compaction settle time.
+# Keep the cycles= value in step with the Mod()/Uniform() bounds in
+# nosqlbench-configmap.yaml.
+#
+# To re-run:
+#   kubectl delete job nosqlbench-prepare -n default
+#   kubectl apply -f manifests/loadtest/nosqlbench-prepare-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nosqlbench-prepare
+  namespace: default
+  labels:
+    app: nosqlbench
+spec:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: nosqlbench
+    spec:
+      restartPolicy: OnFailure
+      # Pin to the dedicated load-generator node. The taint on that node is what
+      # keeps Cassandra off it; these two settings are what put us on it.
+      nodeSelector:
+        workload: loadgen
+      tolerations:
+        - key: workload
+          value: loadgen
+          effect: NoSchedule
+      volumes:
+        - name: workload
+          configMap:
+            name: nb-cql-keyvalue
+      containers:
+        - name: nosqlbench
+          image: nosqlbench/nosqlbench:5.25.16
+          volumeMounts:
+            - name: workload
+              mountPath: /workloads
+          env:
+            - name: CASSANDRA_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: demo-superuser
+                  key: username
+            - name: CASSANDRA_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: demo-superuser
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              NB="java -jar /nb5.jar"
+              HOST=demo-dc1-all-pods-service
+              DC=dc1
+              echo "=== NoSQLBench PREPARE ==="
+              echo "Target: $HOST | DC: $DC | User: $CASSANDRA_USERNAME"
+              echo ""
+              echo "Phase 1: Schema creation"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:schema threads=1 host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD
+              echo ""
+              echo "Phase 2: Bulk load 20M rows at 100k ops/sec (~200s)"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:rampup host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=20M cyclerate=100000 threads=500 errors=count --progress console:10s
+              echo ""
+              echo "=== Prepare complete ==="
+          resources:
+            requests:
+              memory: "8Gi"
+              cpu: "16"
+            limits:
+              # No cpu limit — this job owns the loadgen node while it runs.
+              memory: "12Gi"

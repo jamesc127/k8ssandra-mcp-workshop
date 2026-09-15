@@ -1,0 +1,22 @@
+# On-demand Medusa backup. Applied live during the talk.
+#
+# backupType: full (not the `differential` default) so every sstable is
+# re-uploaded and the backup takes visible time rather than completing
+# instantly off the back of a previous run.
+#
+# Watch it with:
+#   kubectl get medusabackupjob -n default -w
+# Then inspect the result:
+#   kubectl get medusabackup -n default
+#   aws s3 ls s3://<bucket>/demo/ --recursive --human-readable --summarize
+#
+# To re-run, delete the old job first (names must be unique):
+#   kubectl delete medusabackupjob demo-talk-backup -n default
+apiVersion: medusa.k8ssandra.io/v1alpha1
+kind: MedusaBackupJob
+metadata:
+  name: demo-talk-backup
+  namespace: default
+spec:
+  cassandraDatacenter: dc1
+  backupType: full

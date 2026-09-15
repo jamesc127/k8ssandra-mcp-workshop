@@ -1,0 +1,70 @@
+# Helm values for kube-prometheus-stack.
+#
+# Installed by scripts/deploy.sh into namespace `monitoring` with release name
+# `kps`. The release name matters: the K8ssandraCluster CR sets
+# telemetry.prometheus.commonLabels.release=kps so that this Prometheus selects
+# the ServiceMonitor the operator writes.
+#
+# IMPORTANT ORDERING: this chart must be installed BEFORE k8ssandra-operator.
+# The operator decides whether to emit ServiceMonitors by checking whether the
+# ServiceMonitor CRD is registered, via a cached RESTMapper. If the CRD appears
+# after the operator pod starts, telemetry is silently skipped with no error on
+# the CR. deploy.sh restarts the operator to cover this.
+
+alertmanager:
+  # Nothing here alerts anyone; it would just consume a node.
+  enabled: false
+
+grafana:
+  enabled: true
+  adminUser: admin
+  # Override at install time: --set grafana.adminPassword=...
+  adminPassword: workshop
+  defaultDashboardsEnabled: false
+  sidecar:
+    dashboards:
+      enabled: true
+      # Pick up dashboard ConfigMaps from any namespace, so the Cassandra
+      # dashboard can live alongside the other manifests.
+      searchNamespace: ALL
+      label: grafana_dashboard
+  # Prefer the dedicated utility node on the 5-node trial profile, but still
+  # schedule if that node group does not exist (the 9-node full profile).
+  affinity:
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          preference:
+            matchExpressions:
+              - key: workload
+                operator: In
+                values: ["utility"]
+
+prometheus:
+  prometheusSpec:
+    retention: 12h
+    # The operator writes its ServiceMonitor into `default`, not into the
+    # release namespace. Without this, Prometheus ignores it.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: "1"
+        memory: 6Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: ebs-gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: workload
+                  operator: In
+                  values: ["utility"]

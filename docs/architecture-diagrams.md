@@ -58,7 +58,7 @@ Namespace: default
 |  | Watches: K8ssandraCluster CR  |  | Watches: CassandraDatacenter |        |
 |  +-------------------------------+  +-------------------------------+        |
 |                                                                              |
-|  Cassandra Ring (StatefulSet: demo-dc1-default-sts)                          |
+|  Cassandra Ring (StatefulSet: demo-dc1-rack{1,2,3}-sts)                      |
 |  +---------------------+ +---------------------+ +---------------------+    |
 |  | Pod: sts-0           | | Pod: sts-1           | | Pod: sts-2           |   |
 |  | Containers: 2/2      | | Containers: 2/2      | | Containers: 2/2      |  |
@@ -163,7 +163,7 @@ k8ssandra.io                          cassandra.datastax.com
 |         size: 3           |                    v
 +---------------------------+         +---------------------------+
                                       | StatefulSet               |
-                                      | demo-dc1-default-sts      |
+                                      | demo-dc1-rack{1,2,3}-sts  |
                                       | replicas: 3               |
                                       +---------------------------+
 

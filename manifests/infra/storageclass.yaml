@@ -6,6 +6,12 @@ metadata:
 provisioner: ebs.csi.aws.com
 parameters:
   type: gp3
+  # gp3 defaults to 3000 IOPS / 125 MB/s. During the NoSQLBench rampup, client
+  # writes plus 2-3x compaction write amplification push sustained throughput to
+  # ~110 MB/s per node — at or over the default wall. Provision explicitly so the
+  # load test is bounded by Cassandra, not by EBS.
+  iops: "6000"
+  throughput: "500"
 volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Delete
 allowVolumeExpansion: true

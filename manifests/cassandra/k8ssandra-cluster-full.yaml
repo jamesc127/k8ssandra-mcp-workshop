@@ -1,5 +1,6 @@
-# TRIAL PROFILE — sized for the 5-node cluster (manifests/infra/eksctl-cluster.yaml).
-# See k8ssandra-cluster-full.yaml for the 9-node webcast profile.
+# FULL PROFILE — sized for the 9-node webcast cluster (eksctl-cluster-full.yaml).
+# The default trial profile is k8ssandra-cluster.yaml; comments there explain the
+# reasoning behind each setting. Only the sizing differs.
 apiVersion: k8ssandra.io/v1alpha1
 kind: K8ssandraCluster
 metadata:
@@ -14,13 +15,11 @@ spec:
     datacenters:
       - metadata:
           name: dc1
-        # 3 nodes = 1 per rack = 1 per AZ on the trial cluster.
+        # Deploy at 6 (2 nodes per rack), scale to 9 live during the talk.
         #
         # With racks, size MUST stay a multiple of 3 or the ring goes unbalanced.
-        # Scaling 3 -> 6 on the trial cluster also needs softPodAntiAffinity: true,
-        # because hard anti-affinity allows only one Cassandra pod per node and
-        # the trial has just 3 Cassandra nodes.
-        size: 3
+        # That is why the scale demo is 6 -> 9 rather than 3 -> 6 -> 9.
+        size: 6
 
         # Rack-per-AZ. This replaces the softPodAntiAffinity: true that used to
         # be here. The previous attempt (2 racks across us-east-1a/1b) stalled
@@ -57,7 +56,7 @@ spec:
 
         resources:
           requests:
-            cpu: "12"
+            cpu: "11"
             memory: "32Gi"
           limits:
             # Deliberately NO cpu limit. The last run was pegged at 6.0/6.0 CPU

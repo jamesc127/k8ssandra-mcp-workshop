@@ -1,32 +1,91 @@
+# TRIAL PROFILE — 5 worker nodes.
+#
+# This is the default profile: it is what scripts/deploy.sh is sized for, and it
+# exists to exercise the full deployment process (racks, Reaper, Medusa,
+# monitoring) on a small cluster. See eksctl-cluster-full.yaml for the 10-node
+# webcast profile.
+#
+# NOTE: this file is submitted to the provisioning portal out-of-band.
+# scripts/deploy.sh never runs eksctl — it assumes the cluster already exists.
+#
+# Node budget (5 total):
+#   3x cassandra  — one per AZ, so the 3 racks are balanced 1/1/1
+#   1x loadgen    — tainted, so NoSQLBench always has a Cassandra-free node
+#   1x utility    — Prometheus, Grafana, Reaper, operators, easy-cass-mcp
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
 metadata:
   name: k8ssandra-cluster
   region: us-east-1
-  version: "1.31"
+  # Portal allows 1.32-1.34. Upstream k8ssandra-operator CI validates on k8s
+  # 1.36 and documents no minimum, so take the top of the allowed window.
+  version: "1.34"
+
+# Pinning 3 AZs is the single most important line in this file. With only 2 AZs
+# the rack-per-AZ layout stalls during bootstrap: Cassandra's default
+# allocate_tokens_for_local_replication_factor=3 needs 3 racks to allocate
+# tokens. This was the documented failure that forced racks off entirely.
+availabilityZones:
+  - us-east-1a
+  - us-east-1b
+  - us-east-1c
 
 iam:
-  withOIDC: true  # Required for EBS CSI driver IRSA
+  withOIDC: true  # Required for EBS CSI driver IRSA, and for Medusa's S3 IRSA role
 
 managedNodeGroups:
+  # One Cassandra node per AZ. Hard pod anti-affinity (cass-operator's default)
+  # puts at most one Cassandra pod per node, so at size 3 the ring is exactly
+  # one pod per rack per AZ.
   - name: cassandra-workers
-    # m5.4xlarge (16 vCPU / 64 GiB) sized for the 100k TPS load test default.
-    # Cassandra resources.requests is 4 CPU per pod; m5.xlarge (4 vCPU) cannot
-    # fit one Cassandra pod plus a NoSQLBench pod without preempting Cassandra.
-    instanceType: m5.4xlarge
-    # 6 nodes supports the 3-pod Cassandra default plus the 3→6 scale-up demo.
-    # NB pod anti-affinity can place it on a Cassandra-free node when only 3
-    # Cassandra pods are running.
-    desiredCapacity: 6
-    minSize: 6
-    maxSize: 8
+    instanceType: m7i.8xlarge  # 32 vCPU / 128 GiB
+    desiredCapacity: 3
+    minSize: 3
+    maxSize: 3
+    availabilityZones:
+      - us-east-1a
+      - us-east-1b
+      - us-east-1c
     privateNetworking: true  # Nodes in private subnets only — prevents ImagePullBackOff
-    volumeSize: 50
+    volumeSize: 100
     volumeType: gp3
+    labels:
+      workload: cassandra
     iam:
       withAddonPolicies:
         ebs: true
+
+  # Dedicated load generator. The TAINT is what actually reserves this node —
+  # a label alone does not repel pods. Co-locating NoSQLBench with Cassandra was
+  # measured to inflate p50 read latency 3-4x on the shared node.
+  - name: loadgen
+    instanceType: m7i.8xlarge  # 32 vCPU / 128 GiB
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    privateNetworking: true
+    volumeSize: 100
+    volumeType: gp3
+    labels:
+      workload: loadgen
+    taints:
+      - key: workload
+        value: loadgen
+        effect: NoSchedule
+
+  # Everything that is neither Cassandra nor load: Prometheus, Grafana, Reaper,
+  # k8ssandra-operator, cass-operator, cert-manager, metrics-server, easy-cass-mcp.
+  - name: utility
+    instanceType: m7i.8xlarge  # 32 vCPU / 128 GiB
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    privateNetworking: true
+    volumeSize: 100
+    volumeType: gp3
+    labels:
+      workload: utility
 
 addons:
   - name: aws-ebs-csi-driver

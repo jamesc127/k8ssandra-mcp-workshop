@@ -35,6 +35,110 @@ aws ec2 create-tags --resources <PRIVATE_SUBNET_IDS> \
 helm install k8ssandra-operator k8ssandra/k8ssandra-operator --namespace default
 ```
 
+### Cassandra bootstrap stalls when racks are enabled
+
+**Symptom:** With a `racks:` block in the K8ssandraCluster CR, the first pod never
+finishes joining; the ring stays stuck in bootstrap.
+
+**Cause:** Cassandra's default `allocate_tokens_for_local_replication_factor=3`
+needs at least 3 racks to allocate tokens. An earlier version of this workshop
+tried 2 racks across `us-east-1a/1b` — eksctl had auto-selected only 2 AZs
+because the ClusterConfig had no `availabilityZones:` key — and the token
+allocator could not converge.
+
+**Fix:** pin 3 AZs in the eksctl ClusterConfig, both at the top level and on the
+Cassandra node group, so the ASG balances nodes evenly across them:
+
+```yaml
+availabilityZones: [us-east-1a, us-east-1b, us-east-1c]
+```
+
+Verify before applying the CR — `scripts/deploy.sh` gates on this:
+
+```bash
+kubectl get nodes -L topology.kubernetes.io/zone,workload
+```
+
+The workaround that used to be in the CR, `softPodAntiAffinity: true`, packs
+multiple Cassandra pods onto one node and defeats the purpose of racks. It is no
+longer needed and has been removed.
+
+---
+
+## Monitoring Issues
+
+### Grafana dashboards render completely empty
+
+**Cause:** For Cassandra newer than 4.0.3, k8ssandra-operator emits the *modern*
+ServiceMonitor, scraping the management API on `port: metrics` (9000). Metric
+names are `org_apache_cassandra_metrics_*`. Nearly every published k8ssandra
+Grafana dashboard targets the older MCAC endpoint (9103) and its
+`collectd_mcac_*` metric names, so every panel queries something that does not
+exist.
+
+**Fix:** build dashboards against the live metric names. Confirm what is actually
+being scraped first:
+
+```bash
+kubectl port-forward -n monitoring svc/kps-kube-prometheus-stack-prometheus 9090:9090
+# then browse http://localhost:9090 and search for org_apache_cassandra_metrics
+```
+
+Setting `telemetry.mcac.enabled: true` restores the legacy endpoint and lets old
+dashboards work, but it adds a sidecar per pod and depends on a deprecated
+component — not recommended.
+
+### No ServiceMonitor is created at all, and the CR shows no error
+
+**Cause:** The operator decides whether to emit ServiceMonitors by checking
+whether the ServiceMonitor CRD is registered, through a cached RESTMapper. If
+kube-prometheus-stack is installed *after* the operator pod starts, the operator
+never sees the CRD and skips telemetry silently.
+
+**Fix:** install kube-prometheus-stack before k8ssandra-operator (this is the
+order in `scripts/deploy.sh`), or restart the operator:
+
+```bash
+kubectl rollout restart deployment/k8ssandra-operator -n default
+kubectl get servicemonitor -n default   # should be non-empty
+```
+
+---
+
+## Medusa Issues
+
+### Backups fail or hang when uploading to S3
+
+**Cause:** The generated `medusa.ini` renders `secure` and `ssl_verify` as
+`False` unless they are set explicitly in the CR.
+
+**Fix:** set both in `spec.medusa.storageProperties`:
+
+```yaml
+secure: true
+sslVerify: true
+```
+
+### Medusa sidecar has no AWS credentials
+
+**Symptom:** `kubectl exec <pod> -c medusa -- env | grep AWS_` shows nothing.
+
+**Cause:** The pod is not running under the IRSA service account.
+
+**Fix:** confirm `spec.cassandra.serviceAccount: medusa-backup` is set in the CR,
+and that the service account carries its role annotation:
+
+```bash
+kubectl get sa medusa-backup -n default \
+  -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}'
+```
+
+See `manifests/infra/medusa-irsa.md` for the full setup, including the
+static-credentials fallback. Note that the reconciler rejects setting
+`credentialsType: role-based` and `storageSecretRef` at the same time.
+
+---
+
 ## Cassandra Driver Issues
 
 ### "Connection refused" or timeout when connecting from local machine

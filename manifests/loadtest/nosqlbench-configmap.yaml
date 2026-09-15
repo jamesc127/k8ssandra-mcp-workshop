@@ -1,3 +1,15 @@
+# CQL key-value workload for NoSQLBench.
+#
+# DATASET SIZE IS HARDCODED. The nosqlbench image does not support the <<var>>
+# template syntax, so the partition count appears literally in three places:
+# seq_key, rw_key, and the `cycles=` argument of nosqlbench-prepare-job.yaml.
+# Change all three together.
+#
+#   TRIAL profile (3 Cassandra nodes):  20000000  -> ~11 GB/node at RF=3
+#   FULL  profile (6-9 Cassandra nodes): 60000000 -> ~17.5 GB/node at size 6
+#
+# The old dataset was 500k rows (~45 MB), which fit entirely in page cache —
+# Medusa backups finished instantly and Reaper repairs were meaningless.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -6,10 +18,13 @@ metadata:
 data:
   cql-keyvalue.yaml: |
     bindings:
-      seq_key: Mod(500000); ToString() -> String
-      seq_value: Hash(); Mod(1000000000); ToString() -> String
-      rw_key: Uniform(0,500000); ToString() -> String
-      rw_value: Hash(); Mod(1000000000); ToString() -> String
+      seq_key: Mod(20000000); ToString() -> String
+      # ~512-byte values, up from ~10 bytes, so the dataset has real size.
+      # If AlphaNumericString is unavailable in the pinned image, fall back to:
+      #   HashedLineToString('data/lorem_ipsum_full.txt')
+      seq_value: AlphaNumericString(512)
+      rw_key: Uniform(0,20000000); ToString() -> String
+      rw_value: AlphaNumericString(512)
 
     blocks:
       schema:
@@ -24,7 +39,12 @@ data:
             CREATE TABLE IF NOT EXISTS baselines.keyvalue (
               key text PRIMARY KEY,
               value text
-            );
+            )
+            WITH compression = {
+              'class': 'org.apache.cassandra.io.compress.LZ4Compressor',
+              'chunk_length_in_kb': '4'
+            }
+            AND caching = {'keys': 'ALL', 'rows_per_partition': 'NONE'};
       rampup:
         params:
           cl: LOCAL_QUORUM

@@ -16,7 +16,19 @@ description: >
 
 All commands run from the repo root. Everything lives in the `default` namespace.
 
-**EKS cluster is pre-provisioned and externally managed.** Do not run `eksctl create/delete`, do not attempt to scale the node group, and do not assume the cluster name matches `manifests/infra/eksctl-cluster.yaml`. Use whatever `kubectl config current-context` reports. The cluster has 6× `m5.4xlarge` worker nodes, which is sufficient for Cassandra rings up to **9 nodes** and the 100k TPS NoSQLBench workload.
+**EKS cluster is pre-provisioned and externally managed.** Do not run `eksctl create/delete`, do not attempt to scale the node group, and do not assume the cluster name matches `manifests/infra/eksctl-cluster.yaml`. Use whatever `kubectl config current-context` reports.
+
+Two node-group profiles exist. Check which one is live with
+`kubectl get nodes -L topology.kubernetes.io/zone,workload`:
+
+- **Trial** (`manifests/infra/eksctl-cluster.yaml`) — 5 workers: 3 Cassandra (one
+  per AZ), 1 tainted `loadgen`, 1 `utility`. Supports a 3-node ring.
+- **Full** (`manifests/infra/eksctl-cluster-full.yaml`) — 10 workers: 9 Cassandra
+  (3 per AZ), 1 tainted `loadgen`. Supports 3/6/9-node rings and ~200k ops/sec.
+
+Cassandra nodes must span **3 AZs**. With fewer, the rack layout stalls during
+bootstrap because Cassandra's default `allocate_tokens_for_local_replication_factor=3`
+cannot allocate tokens.
 
 ---
 
@@ -208,16 +220,38 @@ kubectl delete job nosqlbench-load -n default
 
 ## 6. Scale Cassandra
 
-The shared EKS cluster supports a Cassandra ring of **up to 9 nodes** (default deploy: 3). Do not scale beyond 9 — the worker node group is fixed and cannot be expanded.
+The ring uses **rack-per-AZ placement (rack1/rack2/rack3)**, so `size` MUST be a
+multiple of 3 or the racks go unbalanced.
+
+Ring size is also capped by the node group, because cass-operator's default hard
+pod anti-affinity allows at most one Cassandra pod per node:
+
+| Cluster profile | Cassandra nodes | Valid sizes |
+|---|---|---|
+| Trial (`eksctl-cluster.yaml`, 5 workers) | 3 | 3 |
+| Full (`eksctl-cluster-full.yaml`, 10 workers) | 9 | 3, 6, 9 |
+
+Do not scale beyond the node count — the worker node group is fixed and cannot be
+expanded. (Going above it requires `softPodAntiAffinity: true` in the CR, which
+packs multiple Cassandra pods onto one node and defeats the point of racks.)
+
+**Use a JSON patch, not a merge patch.** A strategic-merge patch replaces the whole
+`datacenters` array, and the validating webhook rejects the result with
+"storageConfig must be defined".
 
 ```bash
-# Scale to N nodes (3 ≤ N ≤ 9)
+# Scale to N nodes (N must be a multiple of 3)
 kubectl patch k8ssandracluster demo -n default \
-  --type=merge \
-  -p '{"spec":{"cassandra":{"datacenters":[{"metadata":{"name":"dc1"},"size":N}]}}}'
+  --type=json \
+  -p='[{"op":"replace","path":"/spec/cassandra/datacenters/0/size","value":N}]'
 
-# Watch the rollout
+# Watch the rollout — bootstraps are serial, budget ~2-2.5 min per node
 kubectl get pods -l app.kubernetes.io/name=cassandra -n default -w
+
+# Confirm rack balance afterwards
+kubectl get pods -l app.kubernetes.io/name=cassandra -n default \
+  -o jsonpath='{range .items[*]}{.metadata.labels.cassandra\.datastax\.com/rack}{"\n"}{end}' \
+  | sort | uniq -c
 ```
 
 ---

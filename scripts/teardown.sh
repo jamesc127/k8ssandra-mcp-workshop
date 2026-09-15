@@ -25,7 +25,13 @@ kubectl delete svc easy-cass-mcp -n default --ignore-not-found
 kubectl delete deployment easy-cass-mcp -n default --ignore-not-found
 
 echo ""
-echo ">>> Deleting K8ssandraCluster..."
+echo ">>> Deleting Medusa backup objects..."
+kubectl delete medusabackupjob --all -n default --ignore-not-found
+kubectl delete medusabackup --all -n default --ignore-not-found
+kubectl delete medusabackupschedule --all -n default --ignore-not-found
+
+echo ""
+echo ">>> Deleting K8ssandraCluster (this also removes Reaper)..."
 kubectl delete k8ssandracluster demo -n default --ignore-not-found --timeout=120s
 
 echo ""
@@ -35,6 +41,13 @@ kubectl delete pvc -l cassandra.datastax.com/cluster=demo -n default --ignore-no
 echo ""
 echo ">>> Uninstalling k8ssandra-operator..."
 helm uninstall k8ssandra-operator -n default --ignore-not-found 2>/dev/null || true
+
+echo ""
+echo ">>> Uninstalling kube-prometheus-stack..."
+helm uninstall kps -n monitoring --ignore-not-found 2>/dev/null || true
+# The Prometheus StatefulSet PVC is not removed by helm uninstall.
+kubectl delete pvc -l app.kubernetes.io/name=prometheus -n monitoring --ignore-not-found
+kubectl delete namespace monitoring --ignore-not-found
 
 echo ""
 echo ">>> Uninstalling metrics-server..."
@@ -54,6 +67,9 @@ echo "============================================"
 echo "  Teardown Complete!"
 echo "============================================"
 echo ""
-echo "To delete the EKS cluster itself:"
-echo "  eksctl delete cluster --name k8ssandra-cluster --region us-east-1"
+echo "The EKS cluster itself is provisioned out-of-band by the portal — do NOT"
+echo "run 'eksctl delete cluster'. Release the reservation through the portal."
+echo ""
+echo "Medusa's S3 bucket and IAM role are also out-of-band and are left intact."
+echo "To remove them, see manifests/infra/medusa-irsa.md (Teardown section)."
 echo ""
