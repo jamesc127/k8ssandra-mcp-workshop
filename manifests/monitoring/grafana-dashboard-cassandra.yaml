@@ -1,0 +1,399 @@
+# Cassandra dashboard for Grafana, built against the metric names this cluster
+# actually emits.
+#
+# DO NOT replace this with a community k8ssandra dashboard. Those target the
+# deprecated MCAC endpoint (collectd_mcac_*). Cassandra 5 exposes
+# org_apache_cassandra_metrics_* via the management API, so those dashboards
+# render entirely empty here.
+#
+# Metric names and labels verified live on this cluster:
+#   org_apache_cassandra_metrics_client_request_latency_count / _bucket
+#     labels: request_type (Read|Write|CASRead|CASWrite|RangeSlice),
+#             pod, rack, datacenter, cluster, node_name
+#   org_apache_cassandra_metrics_compaction_pending_tasks
+#   org_apache_cassandra_metrics_table_live_disk_space_used
+#   org_apache_cassandra_metrics_thread_pools_pending_tasks
+#
+# NOT included: container CPU. This stack does not scrape the kubelet (see
+# values-kube-prometheus-stack.yaml), so container_cpu_* is unavailable. Use
+# `kubectl top pods` or the OpenShift console's Observe tab - which is where the
+# CFS-throttling finding came from originally anyway.
+#
+# The Grafana sidecar picks this up via the grafana_dashboard label.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-cassandra
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  cassandra.json: |
+    {
+      "title": "Cassandra (k8ssandra)",
+      "uid": "k8ssandra-cassandra",
+      "tags": [
+        "cassandra",
+        "k8ssandra"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "10s",
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": {},
+            "hide": 0,
+            "label": "Datasource"
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Client request rate by type",
+          "description": "Throughput as Cassandra sees it, not as the load generator reports it.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (request_type) (rate(org_apache_cassandra_metrics_client_request_latency_count{request_type=~\"Read|Write\"}[1m]))",
+              "legendFormat": "{{request_type}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "normal"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 2,
+          "title": "Client request latency",
+          "description": "VERIFY UNITS against a known reading before quoting numbers on stage.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "histogram_quantile(0.99, sum by (request_type, le) (rate(org_apache_cassandra_metrics_client_request_latency_bucket{request_type=~\"Read|Write\"}[1m])))",
+              "legendFormat": "p99 {{request_type}}",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "histogram_quantile(0.50, sum by (request_type, le) (rate(org_apache_cassandra_metrics_client_request_latency_bucket{request_type=~\"Read|Write\"}[1m])))",
+              "legendFormat": "p50 {{request_type}}",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "\u00b5s",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 3,
+          "title": "Read rate per node",
+          "description": "Uneven lines here are the noisy-neighbour signature.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (pod) (rate(org_apache_cassandra_metrics_client_request_latency_count{request_type=\"Read\"}[1m]))",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 4,
+          "title": "Pending compactions per node",
+          "description": "Sustained growth means compaction is losing to the write rate.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (pod) (org_apache_cassandra_metrics_compaction_pending_tasks)",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 5,
+          "title": "Live disk space used per node",
+          "description": "",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 16,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (pod) (org_apache_cassandra_metrics_table_live_disk_space_used)",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 6,
+          "title": "Thread pool pending tasks",
+          "description": "Zero pending while throughput is capped means the bottleneck is OUTSIDE Cassandra - the CFS-throttling signature.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 16,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (pod) (org_apache_cassandra_metrics_thread_pools_pending_tasks)",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        }
+      ]
+    }
