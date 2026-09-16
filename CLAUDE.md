@@ -46,9 +46,9 @@ manifests/
   openshift/routes.yaml                 # Routes: easy-cass-mcp, Reaper, Grafana
   openshift/values-*.yaml               # kube-prometheus-stack Helm values (OpenShift)
   apps/easy-cass-mcp-*.yaml             # MCP server deployment + NLB service
-  loadtest/nosqlbench-configmap.yaml    # CQL key-value workload (dataset size hardcoded)
-  loadtest/nosqlbench-prepare-job.yaml  # Schema + bulk load — run once, ahead of time
-  loadtest/nosqlbench-job.yaml          # Sustained read/write load
+  loadtest/nosqlbench-payments-configmap.yaml   # Payments workload: 3 denormalized tables
+  loadtest/nosqlbench-payments-prepare-job.yaml # Schema + 50M-row bulk load (run once)
+  loadtest/nosqlbench-payments-job.yaml         # Sustained 85/15 read/write load
 scripts/
   deploy.sh                            # EKS: 9-step orchestrated deployment (charts pinned)
   teardown.sh                          # EKS: reverse-order resource cleanup
@@ -123,6 +123,32 @@ docs/
 - Docker image binary is at `/nb5.jar`, invoke via `java -jar /nb5.jar`
 - Built-in workloads not bundled in image — use ConfigMap-mounted custom workloads
 - Template `<<var>>` syntax not supported — hardcode values in workload YAML
+- **Test bindings with `driver=stdout` before pointing at Cassandra** — it renders the
+  statements without needing a cluster and turns a 10-minute round trip into seconds
+- **`SimpleDateFormat` and `StartingEpochMillis` do not exist.** The datetime functions in
+  nb5 are `ToDate`, `ToDateTime`, `ToJavaInstant`, `ToEpochMillis`. Build bucket labels with
+  integer division (`Div`/`Mul`/`Add`/`Prefix`), not date formatting
+- **Derive related fields from the same binding chain.** A timestamp and the bucket it
+  belongs to must start from the same `AddHashRange(...)`, or rows land in buckets that
+  contradict their own timestamps
+- **cqld4 cannot PREPARE a multi-statement `BATCH`** — it fails with "Cache computation
+  failed". Use the `simple:` op type (unprepared). Note `prepared: false` alongside `stmt:`
+  is rejected as an ambiguous op template; the op type IS the key
+- `threads` is governed by Little's Law: in-flight = rate x latency. Size for the p99 tail,
+  not the median. That is the real content of pitfall 6
+
+### Payments data model (the workload)
+- Keyspace `payments`, three denormalized views of one transaction, designed query-first:
+  `transactions_by_card` (statement range scan), `transactions_by_id` (dispute point read),
+  `transactions_by_merchant` (settlement range scan)
+- **Card partitions bucket MONTHLY, merchant partitions bucket DAILY** — merchants are far
+  busier per key, so the same "bound the partition" rule gives different answers
+- Writes go through a LOGGED batch so the three views cannot drift. That is an
+  eventual-consistency guarantee, not a performance optimization — it costs a batchlog write
+  and prepared-statement reuse
+- **Dataset is bounded by cycle count, not runtime.** `txn_id` is `ToHashedUUID()` of a
+  bounded cycle, so re-running overwrites the same rows. Sizing is MEASURED: 222.7 MB per
+  1M transactions per node, so 50M transactions ≈ 11.1 GB/node
 
 ## Deployment Parameters
 

@@ -1,0 +1,210 @@
+# Credit-card payments workload for NoSQLBench.
+#
+# Replaces the old cql-keyvalue workload, which was a hashmap rather than a data
+# model: one cell per partition, no clustering key, no range scans, and random
+# 512-byte values that compressed at 1.005 (i.e. not at all).
+#
+# Designed query-first, per cassandra-expert:data-model:
+#   Q1  "show my recent transactions"      -> transactions_by_card   (range scan)
+#   Q2  "fetch transaction X" (dispute)    -> transactions_by_id     (point read)
+#   Q3  "merchant settlement for a day"    -> transactions_by_merchant (range scan)
+#   Q4  new authorization                  -> LOGGED BATCH to all three
+#
+# BOUNDED DATASET. txn_id is ToHashedUUID() of a bounded cycle, and every other
+# binding derives from the same cycle, so re-running rewrites the SAME rows
+# instead of appending new ones. The dataset size is set by the cycle count, not
+# by how long the job runs - which is the failure mode that filled the disks.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nb-cql-payments
+  namespace: default
+data:
+  cql-payments.yaml: |
+    description: |
+      Credit-card payments: authorization writes and cardholder/merchant reads.
+
+    bindings:
+      # --- identity, all derived from the cycle so the row set is bounded ---
+      txn_id:        ToHashedUUID() -> java.util.UUID
+
+      # Card access is ZIPFIAN, not uniform. Real card traffic is heavily skewed:
+      # a minority of cards carry most of the volume. This also creates genuine
+      # hot partitions, which is what makes per-node read rate interesting.
+      card_id:       Zipf(100000,1.1); ToString(); Prefix('card-')
+
+      # Merchants are far fewer than cards and individually much busier, which is
+      # why their table buckets DAILY while the card table buckets MONTHLY.
+      merchant_id:   Zipf(2000,1.05); ToString(); Prefix('mrch-')
+      merchant_name: Zipf(2000,1.05); ToString(); Prefix('Merchant ')
+
+      # Transaction time, and the two buckets derived from it.
+      #
+      # All three chains start from the SAME AddHashRange(0,4320), so for any
+      # given cycle the timestamp and both buckets agree - a row in month-bucket
+      # 5 really does have a September timestamp. Verified with the stdout
+      # driver: hour 4200 -> 2026-09-12, /720 -> M5, /24 -> D175.
+      #
+      # 4320 hours = 180 days at hourly resolution. Hourly (rather than daily)
+      # keeps clustering values well spread inside each partition, so txn_at DESC
+      # is a real ordering rather than a pile of ties broken by txn_id.
+      #
+      # NOTE: nb5 has no SimpleDateFormat/StartingEpochMillis binding. The date
+      # functions that exist are ToDate/ToDateTime/ToJavaInstant/ToEpochMillis;
+      # bucket labels are therefore built with integer division, not formatting.
+      txn_at:        AddHashRange(0,4320); Mul(3600000L); Add(1774051200000L); ToJavaInstant()
+      card_bucket:   AddHashRange(0,4320); Div(720L); ToString(); Prefix('2026-M')
+      mrch_bucket:   AddHashRange(0,4320); Div(24L); ToString(); Prefix('2026-D')
+
+      # --- low-cardinality categorical fields: these are what make it compress ---
+      merchant_cat:  WeightedStrings('GROCERY:25;RESTAURANT:20;FUEL:15;RETAIL:15;TRAVEL:8;UTILITIES:7;HEALTHCARE:5;ENTERTAINMENT:5')
+      status:        WeightedStrings('APPROVED:92;DECLINED:6;PENDING:1;REVERSED:1')
+      currency:      WeightedStrings('USD:85;EUR:8;GBP:4;CAD:3')
+      country:       WeightedStrings('US:85;GB:5;DE:4;CA:3;FR:3')
+      pos_entry:     WeightedStrings('CHIP:55;CONTACTLESS:30;ECOM:12;SWIPE:3')
+      resp_code:     WeightedStrings('00:92;05:4;51:2;14:1;54:1')
+
+      # --- numeric / higher-entropy fields ---
+      amount_cents:  HashRange(150,45000L) -> long
+      risk_score:    HashRange(0,100) -> int
+      auth_code:     HashRange(100000,999999L); ToString() -> String
+      terminal_id:   HashRange(1,9999); ToString(); Prefix('term-')
+      acquirer_id:   WeightedStrings('ACQ-EAST:40;ACQ-WEST:35;ACQ-INTL:25')
+
+    blocks:
+      schema:
+        params:
+          prepared: false
+        ops:
+          create_keyspace: |
+            CREATE KEYSPACE IF NOT EXISTS payments
+            WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': '3'}
+            AND durable_writes = true;
+
+          # Q1. Partition bounded by monthly bucket. At ~67 rows/partition this is
+          # ~30 KB - a real slice query, and far under the 10 MB guideline.
+          create_by_card: |
+            CREATE TABLE IF NOT EXISTS payments.transactions_by_card (
+              card_id text, bucket text, txn_at timestamp, txn_id uuid,
+              merchant_id text, merchant_name text, merchant_cat text,
+              amount_cents bigint, currency text, status text, auth_code text,
+              country text, pos_entry text, resp_code text, risk_score int,
+              terminal_id text, acquirer_id text,
+              PRIMARY KEY ((card_id, bucket), txn_at, txn_id)
+            ) WITH CLUSTERING ORDER BY (txn_at DESC, txn_id ASC)
+              AND compression = {'class':'org.apache.cassandra.io.compress.LZ4Compressor','chunk_length_in_kb':'4'};
+
+          # Q2. Single-key entity table for dispute/receipt lookups.
+          create_by_id: |
+            CREATE TABLE IF NOT EXISTS payments.transactions_by_id (
+              txn_id uuid PRIMARY KEY,
+              card_id text, txn_at timestamp, merchant_id text, merchant_name text,
+              amount_cents bigint, currency text, status text, resp_code text,
+              risk_score int
+            ) WITH compression = {'class':'org.apache.cassandra.io.compress.LZ4Compressor','chunk_length_in_kb':'4'};
+
+          # Q3. DAILY bucket - merchants are much busier than cards.
+          create_by_merchant: |
+            CREATE TABLE IF NOT EXISTS payments.transactions_by_merchant (
+              merchant_id text, bucket text, txn_at timestamp, txn_id uuid,
+              card_id text, amount_cents bigint, currency text, status text,
+              terminal_id text, acquirer_id text,
+              PRIMARY KEY ((merchant_id, bucket), txn_at, txn_id)
+            ) WITH CLUSTERING ORDER BY (txn_at DESC, txn_id ASC)
+              AND compression = {'class':'org.apache.cassandra.io.compress.LZ4Compressor','chunk_length_in_kb':'4'};
+
+      # Bulk load runs one block per table so every table gets the SAME row set.
+      # (A ratio-based mix would send each cycle to only one table and leave the
+      # three views inconsistent.)
+      rampup_card:
+        params:
+          cl: LOCAL_QUORUM
+          prepared: true
+        ops:
+          load_by_card: |
+            INSERT INTO payments.transactions_by_card
+              (card_id, bucket, txn_at, txn_id, merchant_id, merchant_name,
+               merchant_cat, amount_cents, currency, status, auth_code, country,
+               pos_entry, resp_code, risk_score, terminal_id, acquirer_id)
+            VALUES ({card_id},{card_bucket},{txn_at},{txn_id},{merchant_id},
+                    {merchant_name},{merchant_cat},{amount_cents},{currency},
+                    {status},{auth_code},{country},{pos_entry},{resp_code},
+                    {risk_score},{terminal_id},{acquirer_id});
+
+      rampup_id:
+        params:
+          cl: LOCAL_QUORUM
+          prepared: true
+        ops:
+          load_by_id: |
+            INSERT INTO payments.transactions_by_id
+              (txn_id, card_id, txn_at, merchant_id, merchant_name,
+               amount_cents, currency, status, resp_code, risk_score)
+            VALUES ({txn_id},{card_id},{txn_at},{merchant_id},{merchant_name},
+                    {amount_cents},{currency},{status},{resp_code},{risk_score});
+
+      rampup_merchant:
+        params:
+          cl: LOCAL_QUORUM
+          prepared: true
+        ops:
+          load_by_merchant: |
+            INSERT INTO payments.transactions_by_merchant
+              (merchant_id, bucket, txn_at, txn_id, card_id, amount_cents,
+               currency, status, terminal_id, acquirer_id)
+            VALUES ({merchant_id},{mrch_bucket},{txn_at},{txn_id},{card_id},
+                    {amount_cents},{currency},{status},{terminal_id},{acquirer_id});
+
+      # 85/15 read/write, which is typical for card processing.
+      main:
+        params:
+          cl: LOCAL_QUORUM
+          prepared: true
+        ops:
+          # Q1 - the dominant query. A real slice: newest 20 in the partition.
+          stmt_recent:
+            ratio: 70
+            stmt: |
+              SELECT * FROM payments.transactions_by_card
+              WHERE card_id = {card_id} AND bucket = {card_bucket}
+              LIMIT 20;
+
+          # Q2 - point lookup for a dispute or receipt.
+          lookup_by_id:
+            ratio: 15
+            stmt: |
+              SELECT * FROM payments.transactions_by_id WHERE txn_id = {txn_id};
+
+          # Q4 - a new authorization. LOGGED batch because the three tables are
+          # denormalized views of one fact and must not drift. This is NOT a
+          # performance optimization - it costs a batchlog write - it is an
+          # eventual-consistency guarantee across tables.
+          authorize:
+            ratio: 15
+            # cqld4 cannot PREPARE a multi-statement BATCH - it fails with
+            # "Cache computation failed" out of getOrCreatePreparedStatement.
+            # Use the `simple:` op type (unprepared) rather than `stmt:` plus
+            # prepared:false, which nb5 rejects as an ambiguous op template.
+            # Worth naming on stage: you lose prepared-statement reuse on the
+            # write path, which is part of what a LOGGED batch costs you.
+            simple: |
+              BEGIN LOGGED BATCH
+              INSERT INTO payments.transactions_by_card
+                (card_id, bucket, txn_at, txn_id, merchant_id, merchant_name,
+                 merchant_cat, amount_cents, currency, status, auth_code, country,
+                 pos_entry, resp_code, risk_score, terminal_id, acquirer_id)
+              VALUES ({card_id},{card_bucket},{txn_at},{txn_id},{merchant_id},
+                      {merchant_name},{merchant_cat},{amount_cents},{currency},
+                      {status},{auth_code},{country},{pos_entry},{resp_code},
+                      {risk_score},{terminal_id},{acquirer_id});
+              INSERT INTO payments.transactions_by_id
+                (txn_id, card_id, txn_at, merchant_id, merchant_name,
+                 amount_cents, currency, status, resp_code, risk_score)
+              VALUES ({txn_id},{card_id},{txn_at},{merchant_id},{merchant_name},
+                      {amount_cents},{currency},{status},{resp_code},{risk_score});
+              INSERT INTO payments.transactions_by_merchant
+                (merchant_id, bucket, txn_at, txn_id, card_id, amount_cents,
+                 currency, status, terminal_id, acquirer_id)
+              VALUES ({merchant_id},{mrch_bucket},{txn_at},{txn_id},{card_id},
+                      {amount_cents},{currency},{status},{terminal_id},{acquirer_id});
+              APPLY BATCH;

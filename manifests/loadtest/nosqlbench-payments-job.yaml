@@ -1,0 +1,92 @@
+# Payments MAIN load job - the sustained realistic workload.
+#
+# Run nosqlbench-payments-prepare-job.yaml first; this assumes the dataset exists.
+#
+# MIX: 70% cardholder statement (range scan, LIMIT 20)
+#      15% transaction lookup by id (point read)
+#      15% authorization (LOGGED BATCH across all three tables)
+# i.e. 85/15 read/write, which is typical for card processing. The old keyvalue
+# workload was 50/50, which is really a write-saturation test - and is what
+# filled the disks during a rehearsal.
+#
+# THREADS: threads is not folklore. Little's Law - in-flight = rate x latency.
+# At 60k ops/sec against a ~9ms p99 you need ~540 concurrent requests; against
+# the ~850us p50, ~51. Size for the TAIL, not the median. `threads=auto` picks a
+# small multiple of cores, cannot cover the tail at six-figure rates, and starves
+# the rate limiter - which is the real content of pitfall 6 in CLAUDE.md.
+#
+# cycles = cyclerate x seconds. 60000 x 3600 = 216M = 1 hour.
+# Before lengthening, check Grafana panel 13 "Projected hours until PVC full".
+#
+# The dataset is BOUNDED: txn_id is ToHashedUUID() of a bounded cycle and every
+# other binding derives from the same cycle, so writes overwrite the same row set
+# rather than appending. Runtime does not grow the dataset - only sstable
+# generations, until compaction merges them.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nosqlbench-payments-load
+  namespace: default
+  labels:
+    app: nosqlbench
+spec:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: nosqlbench
+    spec:
+      restartPolicy: OnFailure
+      nodeSelector:
+        workload: loadgen
+      tolerations:
+        - key: workload
+          value: loadgen
+          effect: NoSchedule
+      volumes:
+        - name: workload
+          configMap:
+            name: nb-cql-payments
+      containers:
+        - name: nosqlbench
+          image: nosqlbench/nosqlbench:5.25.16
+          volumeMounts:
+            - name: workload
+              mountPath: /workloads
+          env:
+            - name: CASSANDRA_USERNAME
+              valueFrom:
+                secretKeyRef: {name: demo-superuser, key: username}
+            - name: CASSANDRA_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: demo-superuser, key: password}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              NB="java -jar /nb5.jar"
+              W=/workloads/cql-payments.yaml
+              HOST=demo-dc1-all-pods-service
+              DC=dc1
+              RATE=${RATE:-60000}
+              CYCLES=${CYCLES:-216M}
+              echo "=== Payments: 85/15 read/write at ${RATE} ops/sec ==="
+              # errors=count so chaos events (pod kills, rolling restarts) are
+              # recorded in metrics rather than aborting the run. The cqld4
+              # default error handler is "stop", which is wrong for chaos testing.
+              $NB run driver=cqld4 workload=$W tags=block:main \
+                host=$HOST localdc=$DC \
+                username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD \
+                cycles=$CYCLES cyclerate=$RATE threads=600 errors=count \
+                --progress console:10s
+              echo "=== Workload complete ==="
+          resources:
+            requests:
+              memory: "8Gi"
+              cpu: "12"
+            limits:
+              # No cpu limit - throttling the load generator would cap throughput
+              # just as surely as throttling Cassandra does.
+              memory: "12Gi"

@@ -218,7 +218,7 @@ Port-forward is already up; go to the tab.
   fail, hints expire, and nodes miss mutations while down. If a deleted row isn't
   repaired before `gc_grace_seconds`, the tombstone is collected and the row comes
   back from a replica that never heard about the delete. That's zombie data.
-- **Trigger a full repair on `baselines` live.** Watch segments tick up.
+- **Trigger a full repair on `payments` live.** Watch segments tick up.
 - Leave it running — come back to it in Part 8.
 
 ### 5c. Medusa (~4 min)
@@ -480,7 +480,7 @@ Full detail in the README; this is the timing skeleton.
 | T-178 | `./manifests/openshift/node-labels.sh` then `./scripts/deploy-openshift.sh` |
 | T-148 | Assert rack balance (1/1/1 at size 3); `kubectl get servicemonitor` non-empty; Grafana Route reachable |
 | T-143 | Verify MCP tools respond from Claude Code |
-| T-135 | `nosqlbench-prepare-job` — schema + bulk load |
+| T-135 | `nosqlbench-payments-prepare-job` — schema + 50M-row load |
 | T-117 | **Pre-flight Medusa backup** to prove the NooBaa path, then delete it so the live one is a genuine first full backup |
 | T-109 | **Pre-flight Reaper repair** to ~20%, then abort — proves registration and `reaper_db` migration |
 | T-103 | Start the main NoSQLBench job |

@@ -305,7 +305,7 @@ echo ""
 echo ">>> Step 7/8: Deploying easy-cass-mcp, NoSQLBench and Routes..."
 kubectl apply -f "$MANIFESTS_DIR/apps/easy-cass-mcp-deployment.yaml"
 kubectl apply -f "$OCP_DIR/easy-cass-mcp-service.yaml"
-kubectl apply -f "$MANIFESTS_DIR/loadtest/nosqlbench-configmap.yaml"
+kubectl apply -f "$MANIFESTS_DIR/loadtest/nosqlbench-payments-configmap.yaml"
 kubectl apply -f "$OCP_DIR/routes.yaml"
 
 kubectl wait --for=condition=available deployment/easy-cass-mcp \
@@ -346,8 +346,8 @@ echo "Medusa bucket: $BUCKET_NAME (NooBaa, in-cluster)"
 echo "  kubectl apply -f $OCP_DIR/../cassandra/medusa-backup-job.yaml"
 echo ""
 echo "Load test (two stages):"
-echo "  kubectl apply -f $MANIFESTS_DIR/loadtest/nosqlbench-prepare-job.yaml"
-echo "  kubectl apply -f $MANIFESTS_DIR/loadtest/nosqlbench-job.yaml"
+echo "  kubectl apply -f $MANIFESTS_DIR/loadtest/nosqlbench-payments-prepare-job.yaml"
+echo "  kubectl apply -f $MANIFESTS_DIR/loadtest/nosqlbench-payments-job.yaml"
 echo ""
 
 if [ -n "$MCP_HOST" ]; then

@@ -20,7 +20,9 @@ fi
 echo ""
 echo ">>> Deleting NoSQLBench jobs..."
 kubectl delete job -l app=nosqlbench -n "$NAMESPACE" --ignore-not-found
-kubectl delete configmap nb-cql-keyvalue -n "$NAMESPACE" --ignore-not-found
+# The `payments` keyspace lives inside Cassandra and goes away with the
+# K8ssandraCluster below; only the workload ConfigMap needs removing here.
+kubectl delete configmap nb-cql-payments -n "$NAMESPACE" --ignore-not-found
 
 echo ""
 echo ">>> Deleting Routes..."

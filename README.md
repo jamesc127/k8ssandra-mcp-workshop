@@ -285,11 +285,11 @@ bulk load.
 
 ```bash
 # Stage 1 — schema + bulk load. Run once, well ahead of any demo.
-kubectl apply -f manifests/loadtest/nosqlbench-prepare-job.yaml
+kubectl apply -f manifests/loadtest/nosqlbench-payments-prepare-job.yaml
 kubectl logs -f job/nosqlbench-prepare
 
 # Stage 2 — sustained 50/50 read/write
-kubectl apply -f manifests/loadtest/nosqlbench-job.yaml
+kubectl apply -f manifests/loadtest/nosqlbench-payments-job.yaml
 kubectl logs -f job/nosqlbench-load
 ```
 
@@ -305,7 +305,7 @@ does not support `<<template>>` syntax. Change them together.
 Jobs are not re-runnable in place; delete first:
 
 ```bash
-kubectl delete job nosqlbench-load && kubectl apply -f manifests/loadtest/nosqlbench-job.yaml
+kubectl delete job nosqlbench-payments-load && kubectl apply -f manifests/loadtest/nosqlbench-payments-job.yaml
 ```
 
 ### 6. Operate the cluster
@@ -467,9 +467,9 @@ k8ssandra-workshop/
 │   │   ├── easy-cass-mcp-deployment.yaml      # MCP server deployment
 │   │   └── easy-cass-mcp-service.yaml         # Internet-facing NLB service
 │   └── loadtest/
-│       ├── nosqlbench-configmap.yaml          # CQL key-value workload
-│       ├── nosqlbench-prepare-job.yaml        # Schema + bulk load (run once)
-│       └── nosqlbench-job.yaml                # Sustained read/write load
+│       ├── nosqlbench-payments-configmap.yaml   # Payments workload (3 tables)
+│       ├── nosqlbench-payments-prepare-job.yaml # Schema + 50M-row load (once)
+│       └── nosqlbench-payments-job.yaml         # Sustained 85/15 read/write
 ├── docs/
 │   ├── TROUBLESHOOTING.md                     # Known issues and fixes
 │   ├── talk-outline.md                        # Talk structure and demo script

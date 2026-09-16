@@ -246,7 +246,7 @@ echo ""
 echo ">>> Step 8/9: Deploying easy-cass-mcp and NoSQLBench..."
 kubectl apply -f "$MANIFESTS_DIR/apps/easy-cass-mcp-deployment.yaml"
 kubectl apply -f "$MANIFESTS_DIR/apps/easy-cass-mcp-service.yaml"
-kubectl apply -f "$MANIFESTS_DIR/loadtest/nosqlbench-configmap.yaml"
+kubectl apply -f "$MANIFESTS_DIR/loadtest/nosqlbench-payments-configmap.yaml"
 echo "    Waiting for easy-cass-mcp to be ready..."
 kubectl wait --for=condition=available deployment/easy-cass-mcp \
   -n default --timeout=120s 2>/dev/null || echo "    (Deployment still progressing)"
@@ -260,8 +260,8 @@ kubectl rollout status deployment/easy-cass-mcp -n default --timeout=3m || true
 
 echo ""
 echo "    NoSQLBench is a two-stage workload now:"
-echo "      1. kubectl apply -f $MANIFESTS_DIR/loadtest/nosqlbench-prepare-job.yaml   # schema + bulk load"
-echo "      2. kubectl apply -f $MANIFESTS_DIR/loadtest/nosqlbench-job.yaml           # sustained load"
+echo "      1. kubectl apply -f $MANIFESTS_DIR/loadtest/nosqlbench-payments-prepare-job.yaml   # schema + bulk load"
+echo "      2. kubectl apply -f $MANIFESTS_DIR/loadtest/nosqlbench-payments-job.yaml           # sustained load"
 
 # ---------------------------------------------------------------------------
 # Step 9: NLB

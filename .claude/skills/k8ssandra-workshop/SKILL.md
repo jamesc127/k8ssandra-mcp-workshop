@@ -130,7 +130,7 @@ kubectl wait --for=condition=ready pod \
 ```bash
 kubectl apply -f manifests/apps/easy-cass-mcp-deployment.yaml
 kubectl apply -f manifests/apps/easy-cass-mcp-service.yaml
-kubectl apply -f manifests/loadtest/nosqlbench-configmap.yaml
+kubectl apply -f manifests/loadtest/nosqlbench-payments-configmap.yaml
 kubectl wait --for=condition=available deployment/easy-cass-mcp \
   -n default --timeout=120s
 ```
@@ -202,7 +202,7 @@ sudo ln -sf $(which npx) /usr/local/bin/npx
 
 ```bash
 # Start 3-phase load test (schema → 500k rampup → 1hr mixed 50/50 at 100,000 ops/sec)
-kubectl apply -f manifests/loadtest/nosqlbench-job.yaml
+kubectl apply -f manifests/loadtest/nosqlbench-payments-job.yaml
 
 # Monitor progress
 kubectl get job nosqlbench-load -n default
@@ -210,7 +210,7 @@ kubectl logs -f job/nosqlbench-load -n default
 
 # Re-run (Jobs are immutable — must delete first)
 kubectl delete job nosqlbench-load -n default
-kubectl apply -f manifests/loadtest/nosqlbench-job.yaml
+kubectl apply -f manifests/loadtest/nosqlbench-payments-job.yaml
 
 # Stop
 kubectl delete job nosqlbench-load -n default
