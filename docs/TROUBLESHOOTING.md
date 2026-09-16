@@ -65,6 +65,113 @@ longer needed and has been removed.
 
 ---
 
+## Disk Exhaustion
+
+### Nodes are DN but every pod says 3/3 Running
+
+**This is the most misleading failure in the whole workshop.** `kubectl get pods` shows three
+healthy Cassandra pods. `nodetool status` shows two of them `DN`.
+
+```bash
+kubectl get pods -l app.kubernetes.io/name=cassandra    # 3/3 Running, 3/3 Running, 3/3 Running
+kubectl exec demo-dc1-rack1-sts-0 -c cassandra -- nodetool -u cassandra-admin -pw <pw> status
+#   UN  10.129.2.173  ...  rack1
+#   DN  10.131.0.91   ...  rack2
+#   DN  10.131.2.31   ...  rack3
+```
+
+**Cause:** the data volume filled. The commitlog could not be written:
+
+```
+org.apache.cassandra.io.FSWriteError: java.io.IOException: No space left on device
+ERROR [PERIODIC-COMMIT-LOG-SYNCER] Failed to persist commits to disk.
+      Commit disk failure policy is stop; terminating thread.
+```
+
+`commit_failure_policy: stop` halts CQL and gossip **but leaves the JVM running**, so the
+container never exits, the pod never restarts, and nothing in Kubernetes looks wrong. The
+node is simply gone from the ring.
+
+**Why it filled.** Storage was sized from the logical dataset (20M rows x ~550B = ~11 GB per
+node). That is the wrong calculation. Cassandra is append-only: a sustained job overwriting
+the same bounded key range still creates a new sstable generation per write, and UCS could
+not merge them fast enough. Result: 66 live sstables, 44 GB, disks at 94-99% after ~75
+minutes at ~30k writes/sec.
+
+**Size for WRITE THROUGHPUT x DURATION, not for dataset size.**
+
+**Prevention, in order of usefulness:**
+
+1. **Grafana panel 13, "Projected hours until PVC full"** — a linear projection from the last
+   30 minutes of growth. If it reads lower than the load job's remaining runtime, the cluster
+   will go down before the job finishes. Panels 11 and 12 show usage % (orange 70, red 85)
+   and absolute free space.
+2. **`commit_failure_policy: die`** instead of `stop` (now set in all CRs). The JVM exits, the
+   container terminates, the kubelet restarts it, and a persistent failure surfaces as
+   CrashLoopBackOff — a signal Kubernetes already understands. `stop` is the right choice on a
+   VM with systemd; on Kubernetes it hides the failure.
+3. Note that Cassandra's own `table_live_disk_space_used` (dashboard panel 5) **under-reports**
+   — it counts live sstables only, missing commitlog, snapshots and sstables pending deletion.
+   Use the kubelet's `kubelet_volume_stats_*` for the truth.
+
+**Recovery:** expand the PVCs. The ODF StorageClass has `allowVolumeExpansion: true`:
+
+```bash
+kubectl delete job nosqlbench-load -n default          # stop the bleeding first
+for p in server-data-demo-dc1-rack{1,2,3}-sts-0; do
+  kubectl patch pvc $p -n default -p '{"spec":{"resources":{"requests":{"storage":"150Gi"}}}}'
+done
+```
+
+PVCs go to `Resizing` / `FileSystemResizePending`. A mounted, running pod resizes online; a
+pod whose Cassandra has already died needs a restart to complete the filesystem resize.
+
+---
+
+### Node restart-loops after a disk-full event: corrupt commitlog
+
+**Symptom:** after freeing space, one node will not start. cass-operator logs
+`Deleting stuck pod ... Reason: Pod got stuck after Cassandra container terminated` on a loop.
+
+```
+ERROR [main] JVMStabilityInspector - Exiting due to error while processing commit log during initialization.
+org.apache.cassandra.db.commitlog.CommitLogReadHandler$CommitLogReadException:
+  Encountered bad header at position 1769653 of commit log
+  /opt/cassandra/data/commitlog/CommitLog-8-1789578847990.log
+```
+
+**Cause:** the disk filled *mid-write*, leaving a truncated segment. Cassandra refuses to
+replay it and exits during startup, so the loop never resolves on its own.
+
+**Is it safe to discard?** Yes, with RF=3. `references/general/commitlog.md`:
+
+> With RF=3 and `LOCAL_QUORUM` writes, the data is already on multiple nodes — the practical
+> durability risk of 1-2 second periodic sync is very low.
+
+Every mutation in that segment was acknowledged at LOCAL_QUORUM, so it is already on two
+other replicas. Discarding it costs consistency on this node only, which repair restores.
+
+**Fix.** The `cassandra` container is dead, so exec into the **medusa** sidecar — it mounts the
+same `server-data` volume at `/var/lib/cassandra`. Move the segment rather than deleting it,
+so the decision is reversible:
+
+```bash
+kubectl exec demo-dc1-rack3-sts-0 -c medusa -n default -- sh -c \
+  'mkdir -p /var/lib/cassandra/commitlog_corrupt && \
+   mv /var/lib/cassandra/commitlog/CommitLog-8-<id>.log /var/lib/cassandra/commitlog_corrupt/'
+```
+
+The pod restarts on its own. If another segment is corrupt, the next startup names it — repeat.
+
+**Then repair.** On Cassandra 4.0+, incremental repair is safe
+(`references/general/repair.md`), so a normal Reaper repair on `baselines` is enough.
+
+**Alternative:** `-Dcassandra.commitlog.ignorereplayerrors=true` skips bad segments without
+moving files. Same data loss, and it is easy to leave switched on by accident — prefer
+quarantining the file.
+
+---
+
 ## Monitoring Issues
 
 ### Grafana dashboards render completely empty

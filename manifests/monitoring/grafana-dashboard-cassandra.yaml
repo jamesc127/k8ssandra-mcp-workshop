@@ -2,27 +2,28 @@
 # actually emits.
 #
 # TWO DATASOURCES, on purpose:
-#   Panels 1-6  -> our kube-prometheus-stack (Cassandra's own metrics)
-#   Panels 7-10 -> OpenShift Thanos, uid "openshift-thanos" (cAdvisor + node)
+#   Panels 1-6   -> our kube-prometheus-stack (Cassandra's own metrics)
+#   Panels 7-13  -> OpenShift Thanos, uid "openshift-thanos" (cAdvisor, node, kubelet)
 #
-# Our stack does not scrape the kubelet, so container_cpu_* lives only in the
-# platform's monitoring. Panel 8 is the point of the split: CFS throttling is
-# invisible to nodetool tpstats and to every Cassandra-side dashboard, so a
-# cluster can be capped by its cgroup quota while looking perfectly healthy
-# from the inside. See manifests/openshift/thanos-datasource-rbac.yaml.
+# Our stack does not scrape the kubelet, so container_cpu_* and
+# kubelet_volume_stats_* live only in the platform's monitoring.
+#
+# Panel 8 (CFS throttling) and panels 11-13 (disk) are the two things Cassandra
+# cannot tell you about itself:
+#   - a cgroup quota can cap throughput while tpstats looks perfectly healthy
+#   - a full disk trips commit_failure_policy=stop and the node shuts down while
+#     its pod stays 3/3 Running, so nothing in kubectl looks wrong either
+# Panels 11-13 were added after exactly that took two of three nodes down during
+# a rehearsal: 50Gi PVCs, a 3-hour sustained write job, and 66 sstables that UCS
+# could not merge fast enough. Storage must be sized for write throughput x
+# duration, not for the logical dataset size.
+#
+# NOTE: kubelet_volume_stats_* returns DUPLICATE series through Thanos, so every
+# disk query wraps in max by (persistentvolumeclaim) to dedupe.
 #
 # DO NOT replace this with a community k8ssandra dashboard. Those target the
 # deprecated MCAC endpoint (collectd_mcac_*). Cassandra 5 exposes
 # org_apache_cassandra_metrics_* via the management API, so they render empty.
-#
-# Metric names and labels verified live on this cluster:
-#   org_apache_cassandra_metrics_client_request_latency_count / _bucket
-#     labels: request_type (Read|Write|CASRead|CASWrite|RangeSlice),
-#             pod, rack, datacenter, cluster, node_name
-#   org_apache_cassandra_metrics_{compaction_pending_tasks,
-#     table_live_disk_space_used, thread_pools_pending_tasks}
-#   container_cpu_{usage_seconds_total,cfs_throttled_periods_total,cfs_periods_total}
-#   container_memory_working_set_bytes, node_cpu_seconds_total
 #
 # Latency is in MICROSECONDS (verified: coordinator p50 ~847us vs nodetool's
 # 21us local write latency).
@@ -48,7 +49,7 @@ data:
       "schemaVersion": 39,
       "refresh": "10s",
       "time": {
-        "from": "now-30m",
+        "from": "now-1h",
         "to": "now"
       },
       "templating": {
@@ -125,7 +126,7 @@ data:
         {
           "id": 2,
           "title": "Client request latency",
-          "description": "Units verified as microseconds: coordinator p50 ~847us against nodetool's 21us local write.",
+          "description": "Units verified as microseconds: coordinator p50 ~847us vs nodetool's 21us local write.",
           "type": "timeseries",
           "datasource": {
             "type": "prometheus",
@@ -244,7 +245,7 @@ data:
         {
           "id": 4,
           "title": "Pending compactions per node",
-          "description": "Sustained growth means compaction is losing to the write rate.",
+          "description": "Sustained growth means compaction is losing to the write rate - which is what precedes the disk filling up.",
           "type": "timeseries",
           "datasource": {
             "type": "prometheus",
@@ -298,8 +299,8 @@ data:
         },
         {
           "id": 5,
-          "title": "Live disk space used per node",
-          "description": "",
+          "title": "Live disk space used per node (Cassandra's view)",
+          "description": "LIVE sstables only. This UNDER-reports actual disk use - it misses commitlog, snapshots and sstables pending deletion. Use panel 11 for the truth.",
           "type": "timeseries",
           "datasource": {
             "type": "prometheus",
@@ -473,7 +474,7 @@ data:
         {
           "id": 8,
           "title": "CFS throttling (% of periods)",
-          "description": "THE metric behind the CFS-throttling finding. Invisible to nodetool tpstats, invisible to any Cassandra-side dashboard. Non-zero here with idle hosts and empty thread-pool queues means the cgroup quota is the ceiling, not Cassandra.",
+          "description": "THE metric behind the CFS-throttling finding. Invisible to nodetool tpstats. Non-zero here with idle hosts and empty thread-pool queues means the cgroup quota is the ceiling, not Cassandra.",
           "type": "timeseries",
           "datasource": {
             "type": "prometheus",
@@ -616,6 +617,232 @@ data:
                 "stacking": {
                   "mode": "none"
                 }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 11,
+          "title": "PVC disk usage %  [WATCH THIS]",
+          "description": "Actual filesystem usage, from the kubelet - NOT Cassandra's live-sstable figure in panel 5, which under-reports. A full disk trips commit_failure_policy=stop and the node shuts down while its POD STAYS 3/3 Running, so nothing in kubectl looks wrong. Orange 70%, red 85%.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openshift-thanos"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 40,
+            "w": 8,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "expr": "max by (persistentvolumeclaim) (kubelet_volume_stats_used_bytes{namespace=\"default\",persistentvolumeclaim=~\"server-data-demo-dc1-.*\"}) / max by (persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace=\"default\",persistentvolumeclaim=~\"server-data-demo-dc1-.*\"}) * 100",
+              "legendFormat": "{{persistentvolumeclaim}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "max": 100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 70
+                  },
+                  {
+                    "color": "red",
+                    "value": 85
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 12,
+          "title": "PVC free space",
+          "description": "Absolute headroom. Compaction needs room to write a merged sstable before it can delete the inputs, so 'nearly full' fails earlier than you would expect.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openshift-thanos"
+          },
+          "gridPos": {
+            "x": 8,
+            "y": 40,
+            "w": 8,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "expr": "max by (persistentvolumeclaim) (kubelet_volume_stats_available_bytes{namespace=\"default\",persistentvolumeclaim=~\"server-data-demo-dc1-.*\"})",
+              "legendFormat": "{{persistentvolumeclaim}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 10737418240
+                  },
+                  {
+                    "color": "green",
+                    "value": 32212254720
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 13,
+          "title": "Projected hours until PVC full",
+          "description": "Linear projection from the last 30 minutes of growth. This is the panel that would have caught the outage before it happened. Growth near zero clamps to a very large number, i.e. 'not filling'. A sustained load job that runs longer than this figure will take the cluster down.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openshift-thanos"
+          },
+          "gridPos": {
+            "x": 16,
+            "y": 40,
+            "w": 8,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "expr": "max by (persistentvolumeclaim) (kubelet_volume_stats_available_bytes{namespace=\"default\",persistentvolumeclaim=~\"server-data-demo-dc1-.*\"}) / clamp_min(max by (persistentvolumeclaim) (deriv(kubelet_volume_stats_used_bytes{namespace=\"default\",persistentvolumeclaim=~\"server-data-demo-dc1-.*\"}[30m])), 1) / 3600",
+              "legendFormat": "{{persistentvolumeclaim}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "h",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "dashed"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 6
+                  },
+                  {
+                    "color": "green",
+                    "value": 24
+                  }
+                ]
               }
             },
             "overrides": []

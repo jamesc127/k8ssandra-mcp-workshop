@@ -81,6 +81,32 @@ spec:
             # hot replica. 0.1 is the documented modern recommendation.
             dynamic_snitch_badness_threshold: 0.1
 
+            # --- Durability settings, from cassandra-expert references ---
+            #
+            # commit_failure_policy: the operator default is `stop`, which halts
+            # CQL and gossip but LEAVES THE JVM RUNNING. On Kubernetes that is
+            # actively harmful: the container stays alive, the pod stays 3/3
+            # Running, and `kubectl get pods` shows nothing wrong while the node
+            # is dead to the ring. That is exactly how a full disk took two of
+            # three nodes down here without any Kubernetes-visible signal.
+            #
+            # `die` exits the JVM, so the container terminates, the kubelet
+            # restarts it, and a persistent failure surfaces as CrashLoopBackOff
+            # — a signal Kubernetes and any dashboard already understand.
+            # (references/general/commitlog.md recommends `die` wherever a
+            # supervisor restarts the process; on Kubernetes there always is one.)
+            commit_failure_policy: die
+
+            # The 10s default is documented as "appropriate only for slow
+            # spinning disks". Storage here is network-attached (Ceph RBD on
+            # OpenShift, EBS on EKS), for which the guidance is 2s. With RF=3 at
+            # LOCAL_QUORUM the write is already on three nodes, so the exposure
+            # from periodic sync is small either way — but 10s is 5x more
+            # unflushed data to replay after a crash, which is what made the
+            # recovery slow enough for the operator to kill the pod mid-replay.
+            commitlog_sync_period: 2000ms
+
+
             # The operator default is 0, which silently makes the table-level
             # caching = {'keys':'ALL'} setting meaningless. (/optimize Tier-1)
             key_cache_size: 200MiB

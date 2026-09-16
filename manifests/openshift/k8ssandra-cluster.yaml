@@ -67,13 +67,31 @@ spec:
             storageClassName: ocs-storagecluster-ceph-rbd
             accessModes:
               - ReadWriteOnce
-            # Medusa stages backups on this same volume, and a full backup pins
-            # sstables against deletion for the whole upload window while
-            # compaction writes new ones. 50Gi holds ~11 GB of live data plus
-            # compaction headroom plus one full backup.
+            # SIZE THIS FOR WRITE THROUGHPUT x DURATION, NOT FOR THE DATASET.
+            #
+            # 50Gi was the original value, derived from the logical dataset size
+            # (20M rows x ~550B = ~11 GB/node). That is the wrong calculation and
+            # it took two of three nodes down during a rehearsal.
+            #
+            # Cassandra is append-only. The sustained job overwrites the same 20M
+            # bounded keys for 3 hours at ~30k writes/sec, and every overwrite
+            # creates a new sstable generation. UCS could not merge them fast
+            # enough: 66 live sstables, 44 GB, disks at 94-99%. The commitlog then
+            # hit "No space left on device", commit_failure_policy=stop did its
+            # job, and the nodes shut down - WHILE THEIR PODS STAYED 3/3 RUNNING,
+            # so nothing in kubectl looked wrong.
+            #
+            # Medusa also stages backups on this same volume (the sidecar mounts
+            # server-data), and a full backup pins sstables against deletion for
+            # the whole upload window while compaction writes new ones.
+            #
+            # 150Gi leaves ~100 GB free at the observed steady state. Watch
+            # Grafana panel 13, "Projected hours until PVC full": if that number
+            # is smaller than the load job's remaining runtime, the cluster will
+            # go down before the job finishes.
             resources:
               requests:
-                storage: 50Gi
+                storage: 150Gi
 
         resources:
           requests:
@@ -124,6 +142,32 @@ spec:
             # The operator's own defaults already use the new names, so only the
             # new ones may appear here — and they require units.
             dynamic_snitch_badness_threshold: 0.1
+
+            # --- Durability settings, from cassandra-expert references ---
+            #
+            # commit_failure_policy: the operator default is `stop`, which halts
+            # CQL and gossip but LEAVES THE JVM RUNNING. On Kubernetes that is
+            # actively harmful: the container stays alive, the pod stays 3/3
+            # Running, and `kubectl get pods` shows nothing wrong while the node
+            # is dead to the ring. That is exactly how a full disk took two of
+            # three nodes down here without any Kubernetes-visible signal.
+            #
+            # `die` exits the JVM, so the container terminates, the kubelet
+            # restarts it, and a persistent failure surfaces as CrashLoopBackOff
+            # — a signal Kubernetes and any dashboard already understand.
+            # (references/general/commitlog.md recommends `die` wherever a
+            # supervisor restarts the process; on Kubernetes there always is one.)
+            commit_failure_policy: die
+
+            # The 10s default is documented as "appropriate only for slow
+            # spinning disks". Storage here is network-attached (Ceph RBD on
+            # OpenShift, EBS on EKS), for which the guidance is 2s. With RF=3 at
+            # LOCAL_QUORUM the write is already on three nodes, so the exposure
+            # from periodic sync is small either way — but 10s is 5x more
+            # unflushed data to replay after a crash, which is what made the
+            # recovery slow enough for the operator to kill the pod mid-replay.
+            commitlog_sync_period: 2000ms
+
             key_cache_size: 200MiB
             stream_throughput_outbound: 100MiB/s
             compaction_throughput: 32MiB/s

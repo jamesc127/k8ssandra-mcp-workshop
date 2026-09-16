@@ -7,8 +7,17 @@
 # cores each sustain roughly 80k, so 60k leaves headroom.
 #   FULL profile: parallelism/completions 2, cyclerate 100000 each = 200k ops/sec.
 #
-# cycles = cyclerate x seconds. 60000 x 10800 = 648M = 3 hours, long enough to
-# start well before a talk and still be running through Q&A.
+# cycles = cyclerate x seconds. 60000 x 3600 = 216M = 1 HOUR.
+#
+# This was 3 hours, and 3 hours is what filled the disks and took two of three
+# nodes down. Cassandra is append-only: overwriting the same bounded key range
+# still creates a new sstable generation per write, and compaction could not
+# keep up. Storage has to be sized for WRITE THROUGHPUT x DURATION, not for the
+# logical dataset size.
+#
+# Before lengthening this again, check Grafana panel 13, "Projected hours until
+# PVC full". If that number is smaller than the runtime you want, either raise
+# the PVC size or lower cyclerate - do not just start the job and walk away.
 #
 # Uses threads=400 explicitly — threads=auto picks too few threads to
 # sustain six-figure throughput regardless of cyclerate.
@@ -79,8 +88,8 @@ spec:
               echo "=== NoSQLBench CQL KeyValue - main workload ==="
               echo "Target: $HOST | DC: $DC | User: $CASSANDRA_USERNAME"
               echo ""
-              echo "3 hours of mixed 50/50 read/write at 60k ops/sec"
-              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=648M cyclerate=60000 threads=400 errors=count --progress console:10s
+              echo "1 hour of mixed 50/50 read/write at 60k ops/sec"
+              $NB run driver=cqld4 workload=/workloads/cql-keyvalue.yaml tags=block:main host=$HOST localdc=$DC username=$CASSANDRA_USERNAME password=$CASSANDRA_PASSWORD cycles=216M cyclerate=60000 threads=400 errors=count --progress console:10s
               echo ""
               echo "=== Workload complete ==="
           resources:
