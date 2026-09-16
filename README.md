@@ -68,6 +68,23 @@ Differences worth knowing:
   present. Use `key_cache_size`, `compaction_throughput`, `stream_throughput_outbound` with
   units — never the `*_in_mb` / `*_mb_per_sec` / `*_megabits_per_sec` forms that most tuning
   guides still show.
+- **The 14-core CPU limit binds at ring size 3, on purpose.** Measured under load: containers
+  at 11.9–14.6 cores, 0.10–0.22% of CFS periods throttled, worker nodes only 20–32% busy.
+  The limit is sized for two pods per worker after the 3 → 6 scale; at size 3 each pod owns a
+  whole worker, so the quota costs throughput for nothing. It is kept because it makes the
+  workshop's central finding demonstrable live rather than recounted — see `docs/talk-outline.md`
+  Part 8. **Any throughput number measured here comes from a deliberately constrained cluster.**
+
+### Monitoring uses two datasources
+
+Grafana queries both our Prometheus (Cassandra's own metrics) and **OpenShift's Thanos**
+(cAdvisor and node metrics). Our stack does not scrape the kubelet, so `container_cpu_*` —
+including `container_cpu_cfs_throttled_seconds_total` — is only available from the platform.
+
+That split is the point: CFS throttling is invisible to `nodetool tpstats` and to every
+Cassandra-side dashboard, so a cluster can be capped by its cgroup quota while looking
+perfectly healthy from the inside. `manifests/openshift/thanos-datasource-rbac.yaml` creates
+the ServiceAccount; the token is minted at deploy time and never committed.
 
 Teardown: `./scripts/teardown-openshift.sh`
 

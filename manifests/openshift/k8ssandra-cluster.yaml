@@ -89,14 +89,29 @@ spec:
             # limit is exactly the fix for the CFS throttling that capped the
             # previous run at 6.0/6.0 CPU while the hosts idled at 30-70%.
             #
-            # The way out is a limit set high enough that it never binds.
-            # 2 pods x 14 = 28 on a 31.5-CPU worker, against a request of 12
-            # that Cassandra is not expected to exceed under this load. Throttling
-            # only hurts when the quota is actually reached; a generous limit
-            # satisfies the webhook without reintroducing the ceiling.
+            # 14 is sized for TWO pods per worker (2 x 14 = 28 on a 31.5-CPU
+            # node), which is what the 3 -> 6 scale demo produces.
             #
-            # Watch for it anyway at rehearsal: if container_cpu_cfs_throttled
-            # is non-zero under load, raise this or drop softPodAntiAffinity.
+            # AT RING SIZE 3 THIS LIMIT BINDS, AND THAT IS DELIBERATE. Measured
+            # under the sustained 50/50 load with one pod per worker:
+            #
+            #   container CPU        11.9 - 14.6 cores  (limit 14)
+            #   CFS periods throttled     0.10 - 0.22 %
+            #   worker node CPU              20 - 32 %
+            #
+            # Pods pressed against the cgroup quota while the hosts idle — the
+            # same signature as the earlier run that capped at 6.0/6.0 CPU, just
+            # milder. Strictly, at size 3 each pod has a whole worker to itself
+            # and this quota costs throughput for nothing.
+            #
+            # It is kept because it makes the workshop's central finding LIVE
+            # rather than recounted: /diagnose can find real throttling on the
+            # Grafana "CFS throttling" panel, and raising this number clears it
+            # on stage. Do not "fix" it without reading docs/talk-outline.md
+            # Part 8 first.
+            #
+            # Consequence to state out loud: throughput numbers measured here
+            # come from a deliberately constrained cluster.
             cpu: "14"
             memory: "32Gi"
 

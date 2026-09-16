@@ -388,27 +388,57 @@ the table-level setting is silently meaningless without the YAML setting.
 
 | Finding | Change in the repo |
 |---|---|
-| CFS throttling at the cgroup ceiling | **No CPU limit at all** — the quota mechanism isn't installed |
-| `key_cache_size_in_mb: 0` vs `caching: {keys: ALL}` | `key_cache_size_in_mb: 200` |
+| `key_cache_size_in_mb: 0` vs `caching: {keys: ALL}` | `key_cache_size: 200MiB` |
 | 16 KiB compression chunks, ~250x I/O amp on point lookups | `chunk_length_in_kb: 4` |
 | Soft anti-affinity that no-ops when every node has a Cassandra pod | Dedicated **tainted** loadgen node |
-| `softPodAntiAffinity` — `/expert` called it "defensible only for dev/CI/workshop, not for any RF=3 cluster where availability matters" | **Three racks, and the skill's objection now stated out loud rather than quietly ignored** — see the note below |
+| CFS throttling at the cgroup ceiling | **Deliberately left in place — see below** |
 
-**The one the skill is still right about.** Four of those five are fixed. The fifth —
-`softPodAntiAffinity` — is still on, because three Cassandra workers cannot host a
-six-node ring any other way. Rather than hide it, put it on screen: the skill's
-critique is correct, the constraint is real, and the honest answer is "this is a
-workshop cluster, and here is exactly what I would change in production."
+### Do this one live, not as a war story
 
-That is a better ending than a clean sweep would have been. A tool that tells you
-something inconvenient, that you then choose to accept with your eyes open, is more
-useful than one that only confirms what you already did.
+The last two rows are the interesting ones, because on this cluster the skill is
+*still right* about both.
 
-Run `/diagnose` live against the current cluster and show the difference.
+**Throttling is happening right now.** Measured under the running load:
 
-> _"The operator defaults shipped five production tunings missed. The MCP-plus-skills
-> loop surfaced all of them in under an hour — and then I went and fixed them, and
-> the fixes are in the repo."_
+| | |
+|---|---|
+| Cassandra container CPU | 11.9 – 14.6 cores |
+| Configured limit | **14** |
+| CFS periods throttled | **0.10 – 0.22 %** |
+| Worker node CPU | 20 – 32 % |
+
+Pods pressed against the cgroup quota while the hosts idle — the same signature as
+the 6.0/6.0 run, just milder. So instead of recounting the old finding:
+
+1. Put the Grafana **"CFS throttling (% of periods)"** panel on screen. Non-zero.
+2. Next to it, **"Worker node CPU utilisation"**. Twenty-something percent.
+3. Then Cassandra's own **thread pool pending tasks**. Shallow.
+4. Ask Claude `/diagnose`. Three signals that each look fine alone, and only mean
+   something together — which is exactly the reasoning a skill encodes.
+5. Raise the limit live and watch panel 8 go to zero.
+
+**Why the panel exists at all is half the point.** That metric comes from cAdvisor,
+via a second Grafana datasource pointed at OpenShift's Thanos. It is invisible to
+`nodetool tpstats` and absent from every Cassandra-side dashboard. A cluster can be
+capped by its cgroup quota and look perfectly healthy from the inside.
+
+**Be straight about the constraint.** The 14-core limit is sized for two pods per
+worker after the scale-up. At ring size 3 each pod owns a whole 31.5-core worker, so
+right now that quota costs throughput for nothing — and any throughput number quoted
+from this cluster comes from a deliberately constrained one. Say so.
+
+**And `softPodAntiAffinity` is still on**, because three workers cannot host a
+six-node ring any other way. `/expert` calls it "defensible only for dev/CI/workshop,
+not for any RF=3 cluster where availability matters." It is right. This is a
+workshop cluster; in production you would add workers instead.
+
+That is a better ending than a clean sweep. A tool that tells you something
+inconvenient, which you then accept with your eyes open, is more useful than one
+that only confirms what you already did.
+
+> _"The operator defaults shipped five production tunings missed. The loop surfaced
+> all of them in under an hour. I fixed three, and I'm choosing to live with two —
+> and I can tell you exactly why for each one."_
 
 **Check Reaper here** — the repair from Part 5b should have made real progress.
 
