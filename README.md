@@ -473,7 +473,8 @@ k8ssandra-workshop/
 ├── docs/
 │   ├── TROUBLESHOOTING.md                     # Known issues and fixes
 │   ├── talk-outline.md                        # Talk structure and demo script
-│   ├── architecture-diagrams.md               # Topology, data flow, CRD relationships
+│   ├── architecture-diagrams.md               # Topology, data flow, CRDs (EKS)
+│   ├── architecture-diagrams-openshift.md     # Same for the live OpenShift cluster
 │   └── mcp-skills-cassandra-analysis.md       # Writeup of the 9-node / 100k run
 └── scripts/
     ├── deploy.sh                              # EKS: 9-step deployment orchestration

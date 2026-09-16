@@ -1,5 +1,10 @@
 # K8ssandra on EKS - Architecture Diagrams
 
+> **This describes the EKS profile.** The workshop currently runs on OpenShift —
+> see [`architecture-diagrams-openshift.md`](architecture-diagrams-openshift.md)
+> for the live cluster, which differs in racks, storage, backups, exposure and
+> admission. That file ends with a side-by-side comparison table.
+
 ## 1. AWS / EKS Infrastructure Topology
 
 ```

@@ -153,7 +153,8 @@ field. It is not deployed in this workshop.
 
 ### 4c. The CRD map, live (~3 min)
 
-Show `docs/architecture-diagrams.md` §4 on screen, then go to the terminal:
+Show `docs/architecture-diagrams-openshift.md` on screen — §2 for the workload
+layout and §4 for the CRD ownership map — then go to the terminal:
 
 ```bash
 kubectl get crds | grep -E 'k8ssandra|cassandra\.datastax'

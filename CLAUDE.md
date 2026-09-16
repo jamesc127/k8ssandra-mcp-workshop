@@ -57,7 +57,9 @@ scripts/
 docs/
   TROUBLESHOOTING.md                   # Known issues and fixes
   talk-outline.md                      # Talk structure and live-demo script
-  architecture-diagrams.md             # ASCII topology, data flow, CRD relationships
+  architecture-diagrams.md             # ASCII topology, data flow, CRDs (EKS)
+  architecture-diagrams-openshift.md   # Same for the LIVE cluster, plus the
+                                       #   admission/CRD/Route traps + EKS diff
   mcp-skills-cassandra-analysis.md     # Writeup of the 9-node / 100k ops-sec run
 ```
 
