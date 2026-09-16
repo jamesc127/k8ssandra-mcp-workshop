@@ -136,6 +136,40 @@ else
     --wait --timeout 10m
 fi
 
+# Second Grafana datasource: OpenShift's own Thanos Querier. Our Prometheus
+# does not scrape the kubelet, so container_cpu_* — including
+# container_cpu_cfs_throttled_seconds_total — lives only in the platform stack.
+# The token is minted here rather than committed.
+echo "    Wiring OpenShift Thanos as a Grafana datasource..."
+kubectl apply -f "$OCP_DIR/thanos-datasource-rbac.yaml"
+THANOS_TOKEN=$(kubectl create token grafana-thanos -n monitoring --duration=8760h 2>/dev/null || true)
+if [ -n "$THANOS_TOKEN" ]; then
+  kubectl create secret generic grafana-datasource-thanos \
+    -n monitoring \
+    --from-literal=thanos-datasource.yaml="apiVersion: 1
+datasources:
+  - name: OpenShift Thanos
+    uid: openshift-thanos
+    type: prometheus
+    access: proxy
+    url: https://thanos-querier.openshift-monitoring.svc:9091
+    isDefault: false
+    editable: false
+    jsonData:
+      timeInterval: 30s
+      tlsSkipVerify: true
+      httpHeaderName1: Authorization
+    secureJsonData:
+      httpHeaderValue1: Bearer $THANOS_TOKEN" \
+    --dry-run=client -o yaml \
+    | kubectl label -f - --local -o yaml --dry-run=client grafana_datasource=1 \
+    | kubectl apply -f -
+  # The datasource sidecar only reads on change, so nudge Grafana.
+  kubectl rollout restart deployment/kps-grafana -n monitoring >/dev/null 2>&1 || true
+else
+  echo "    WARNING: could not mint a Thanos token; pod metrics will be missing from Grafana."
+fi
+
 if compgen -G "$MANIFESTS_DIR/monitoring/grafana-dashboard-*.yaml" > /dev/null; then
   kubectl apply -f "$MANIFESTS_DIR"/monitoring/grafana-dashboard-*.yaml
 else

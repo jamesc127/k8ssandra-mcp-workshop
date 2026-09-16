@@ -1,23 +1,31 @@
 # Cassandra dashboard for Grafana, built against the metric names this cluster
 # actually emits.
 #
+# TWO DATASOURCES, on purpose:
+#   Panels 1-6  -> our kube-prometheus-stack (Cassandra's own metrics)
+#   Panels 7-10 -> OpenShift Thanos, uid "openshift-thanos" (cAdvisor + node)
+#
+# Our stack does not scrape the kubelet, so container_cpu_* lives only in the
+# platform's monitoring. Panel 8 is the point of the split: CFS throttling is
+# invisible to nodetool tpstats and to every Cassandra-side dashboard, so a
+# cluster can be capped by its cgroup quota while looking perfectly healthy
+# from the inside. See manifests/openshift/thanos-datasource-rbac.yaml.
+#
 # DO NOT replace this with a community k8ssandra dashboard. Those target the
 # deprecated MCAC endpoint (collectd_mcac_*). Cassandra 5 exposes
-# org_apache_cassandra_metrics_* via the management API, so those dashboards
-# render entirely empty here.
+# org_apache_cassandra_metrics_* via the management API, so they render empty.
 #
 # Metric names and labels verified live on this cluster:
 #   org_apache_cassandra_metrics_client_request_latency_count / _bucket
 #     labels: request_type (Read|Write|CASRead|CASWrite|RangeSlice),
 #             pod, rack, datacenter, cluster, node_name
-#   org_apache_cassandra_metrics_compaction_pending_tasks
-#   org_apache_cassandra_metrics_table_live_disk_space_used
-#   org_apache_cassandra_metrics_thread_pools_pending_tasks
+#   org_apache_cassandra_metrics_{compaction_pending_tasks,
+#     table_live_disk_space_used, thread_pools_pending_tasks}
+#   container_cpu_{usage_seconds_total,cfs_throttled_periods_total,cfs_periods_total}
+#   container_memory_working_set_bytes, node_cpu_seconds_total
 #
-# NOT included: container CPU. This stack does not scrape the kubelet (see
-# values-kube-prometheus-stack.yaml), so container_cpu_* is unavailable. Use
-# `kubectl top pods` or the OpenShift console's Observe tab - which is where the
-# CFS-throttling finding came from originally anyway.
+# Latency is in MICROSECONDS (verified: coordinator p50 ~847us vs nodetool's
+# 21us local write latency).
 #
 # The Grafana sidecar picks this up via the grafana_dashboard label.
 apiVersion: v1
@@ -49,9 +57,12 @@ data:
             "name": "datasource",
             "type": "datasource",
             "query": "prometheus",
-            "current": {},
+            "current": {
+              "text": "Prometheus",
+              "value": "prometheus"
+            },
             "hide": 0,
-            "label": "Datasource"
+            "label": "Cassandra datasource"
           }
         ]
       },
@@ -114,7 +125,7 @@ data:
         {
           "id": 2,
           "title": "Client request latency",
-          "description": "VERIFY UNITS against a known reading before quoting numbers on stage.",
+          "description": "Units verified as microseconds: coordinator p50 ~847us against nodetool's 21us local write.",
           "type": "timeseries",
           "datasource": {
             "type": "prometheus",
@@ -343,7 +354,7 @@ data:
         {
           "id": 6,
           "title": "Thread pool pending tasks",
-          "description": "Zero pending while throughput is capped means the bottleneck is OUTSIDE Cassandra - the CFS-throttling signature.",
+          "description": "Zero pending while throughput is capped means the bottleneck is OUTSIDE Cassandra.",
           "type": "timeseries",
           "datasource": {
             "type": "prometheus",
@@ -369,6 +380,235 @@ data:
           "fieldConfig": {
             "defaults": {
               "unit": "short",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 7,
+          "title": "Cassandra pod CPU vs limit",
+          "description": "Lines converging on the limit are about to be throttled. Cassandra cannot see this.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openshift-thanos"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 24,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"}[2m]))",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "expr": "min(kube_pod_container_resource_limits{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\",resource=\"cpu\"})",
+              "legendFormat": "limit",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 8,
+          "title": "CFS throttling (% of periods)",
+          "description": "THE metric behind the CFS-throttling finding. Invisible to nodetool tpstats, invisible to any Cassandra-side dashboard. Non-zero here with idle hosts and empty thread-pool queues means the cgroup quota is the ceiling, not Cassandra.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openshift-thanos"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 24,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "expr": "sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"}[5m])) / sum by (pod) (rate(container_cpu_cfs_periods_total{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"}[5m])) * 100",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 9,
+          "title": "Cassandra pod memory (working set)",
+          "description": "",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openshift-thanos"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 32,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"})",
+              "legendFormat": "{{pod}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 10,
+          "title": "Worker node CPU utilisation",
+          "description": "Hosts idling while pods are throttled is the giveaway.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "openshift-thanos"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 32,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "expr": "(1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) * 100",
+              "legendFormat": "{{instance}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
               "min": 0,
               "custom": {
                 "lineWidth": 2,

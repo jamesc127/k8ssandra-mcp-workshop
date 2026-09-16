@@ -1,0 +1,39 @@
+# Lets Grafana query OpenShift's own monitoring stack alongside our Prometheus.
+#
+# WHY: our kube-prometheus-stack deliberately does not scrape the kubelet (see
+# values-kube-prometheus-stack.yaml), so container_cpu_* and friends are not in
+# it. OpenShift's built-in stack already collects them from cAdvisor. Rather
+# than run a second kubelet scrape and fight the platform for it, we point
+# Grafana at OpenShift's Thanos Querier as a second datasource.
+#
+# This is what makes container_cpu_cfs_throttled_seconds_total visible — the
+# metric behind the CFS-throttling finding, which is otherwise invisible to
+# nodetool and to any Cassandra-side dashboard.
+#
+# Port 9091 on thanos-querier is the cluster-wide endpoint and authorises via
+# the bearer token's RBAC; cluster-monitoring-view grants read across all
+# namespaces. (Port 9092 is the tenancy-aware endpoint and requires an explicit
+# namespace parameter on every query — wrong shape for a dashboard.)
+#
+# The token is NOT in this file. scripts/deploy-openshift.sh mints one and
+# writes the Grafana datasource Secret at deploy time, so no credential is
+# committed.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-thanos
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-thanos-monitoring-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: grafana-thanos
+    namespace: monitoring
