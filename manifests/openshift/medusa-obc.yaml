@@ -1,0 +1,22 @@
+# Medusa's backup bucket, served by NooBaa (the Multicloud Object Gateway that
+# ships with OpenShift Data Foundation).
+#
+# This replaces the AWS S3 bucket + IRSA role the EKS profile needed. Nothing
+# leaves the cluster, there is no AWS account involved, and no IAM to request.
+#
+# Creating this OBC produces two resources named `medusa-backups` in the same
+# namespace:
+#   ConfigMap  -> BUCKET_HOST, BUCKET_PORT, BUCKET_NAME
+#   Secret     -> AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#
+# Medusa does not read that secret shape — it wants a single `credentials` key
+# in AWS INI format. scripts/deploy-openshift.sh converts it into the
+# `medusa-bucket-key` secret that the K8ssandraCluster CR references.
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: medusa-backups
+  namespace: default
+spec:
+  generateBucketName: medusa-backups
+  storageClassName: openshift-storage.noobaa.io

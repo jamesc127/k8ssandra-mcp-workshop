@@ -69,6 +69,12 @@ spec:
 
         config:
           cassandraYaml:
+            # NOTE: Cassandra 5.0 renamed several of these settings and refuses
+            # to start if both the old and new spellings are present:
+            #   "Config contains both old and new keys for the same configuration
+            #    parameters, migrate old -> new"
+            # The operator's own defaults already use the new names, so only the
+            # new ones may appear here — and they require units.
             # Default 1.0 lets the dynamic snitch ignore all but 100%-worse
             # replicas; at sub-ms latencies this creates a self-reinforcing
             # hot replica. 0.1 is the documented modern recommendation.
@@ -76,14 +82,14 @@ spec:
 
             # The operator default is 0, which silently makes the table-level
             # caching = {'keys':'ALL'} setting meaningless. (/optimize Tier-1)
-            key_cache_size_in_mb: 200
+            key_cache_size: 200MiB
 
             # Load-bearing for the live scale demo. At the 201 Mbps default, a
             # joining node receiving ~11 GB takes ~7 minutes, and bootstraps are
             # serial. 800 Mbps brings it to ~2 minutes per node.
-            stream_throughput_outbound_megabits_per_sec: 800
+            stream_throughput_outbound: 100MiB/s
 
-            compaction_throughput_mb_per_sec: 32
+            compaction_throughput: 32MiB/s
 
             # num_tokens is IMMUTABLE after create — a wrong value means a full
             # teardown. /optimize recommends 4 (and it triggers the operator's

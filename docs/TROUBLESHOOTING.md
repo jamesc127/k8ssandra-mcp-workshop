@@ -139,6 +139,339 @@ static-credentials fallback. Note that the reconciler rejects setting
 
 ---
 
+### Route returns 503 although the pod is healthy
+
+**Cause:** the Route's `spec.port.targetPort` must be the **name** of the service's port, not
+its number, when the service uses named ports. `kps-grafana` exposes port 80 named
+`http-web`; a Route pointing at `80` matches nothing and the router answers 503 while the pod
+sits there perfectly healthy.
+
+```bash
+kubectl get svc kps-grafana -n monitoring \
+  -o jsonpath='{range .spec.ports[*]}name={.name} port={.port}{"\n"}{end}'
+```
+
+**Fix:** use the port name (`targetPort: http-web`).
+
+---
+
+### Probing a distroless container: the command fails and you read it as a result
+
+Not a cluster fault, but it cost real time here. The Prometheus image
+(`v3.14.0-distroless`) ships no shell, no `wget` and no `curl`:
+
+```
+$ kubectl exec ... -c prometheus -- wget -qO- http://localhost:9090/api/v1/targets
+executable file `wget` not found in $PATH
+```
+
+If stderr is discarded and the output is piped into a parser, that failure looks exactly like
+an empty result — "0 active targets" — and sends you chasing a scraping bug that does not
+exist. Query through a port-forward instead:
+
+```bash
+kubectl port-forward -n monitoring svc/kps-kube-prometheus-stack-prometheus 9090:9090 &
+curl -s 'http://localhost:9090/api/v1/targets?state=active'
+```
+
+---
+
+### "cannot set blockOwnerDeletion if an ownerReference refers to a resource you can't set finalizers on"
+
+**This is the highest-value OpenShift gotcha in this repo.** It broke Prometheus and Reaper
+simultaneously, by two different routes, and neither symptom named the cause.
+
+**Why it happens on OpenShift and not on EKS.** OpenShift enables the
+`OwnerReferencesPermissionEnforcement` admission plugin, which vanilla Kubernetes leaves off.
+Under it, creating a resource whose `ownerReference` sets `blockOwnerDeletion: true` requires
+the creator to hold **`update`** on the *owner's* `finalizers` subresource. Both Helm charts
+here grant only **`patch`**:
+
+```
+["monitoring.coreos.com"] | ["prometheuses","prometheuses/finalizers",...] | ["patch"]
+```
+
+That is sufficient on EKS and insufficient here.
+
+**Symptom 1 — Prometheus never gets a StatefulSet.** The `Prometheus` CR exists and looks
+fine at a glance:
+
+```bash
+kubectl get prometheus -n monitoring -o jsonpath='{range .status.conditions[*]}{.type}={.status} reason={.reason} msg={.message}{"\n"}{end}'
+# Available=False  reason=StatefulSetNotFound
+# Reconciled=False reason=ReconciliationFailed
+#   msg=synchronizing PrometheusRules failed: ... configmaps "...-rulefiles-0" is forbidden:
+#       cannot set blockOwnerDeletion ...
+```
+
+**Symptom 2 — Reaper is never created at all,** with no Reaper-specific error anywhere. The
+k8ssandra-operator reconcile runs Reaper secrets and schema successfully, then reaches
+telemetry and aborts:
+
+```
+INFO  Reaper user secrets successfully reconciled
+INFO  Reconciling Reaper schema
+INFO  Reconciling Stargate and Reaper for dc dc1
+ERROR could not create ServiceMonitor resource ... cannot set blockOwnerDeletion ...
+```
+
+Everything after that ServiceMonitor call is skipped, so `kubectl get reaper` returns
+nothing and it looks like the `reaper:` block was ignored.
+
+**Diagnosing it — use the right syntax.** `kubectl auth can-i` with the `resource/finalizers`
+slash form reports the **wrong answer**. Always use `--subresource`:
+
+```bash
+# Wrong — says "no" even when permission exists, and "yes" when it does not
+kubectl auth can-i update prometheuses/finalizers --as=<sa>
+
+# Right
+kubectl auth can-i update prometheuses.monitoring.coreos.com \
+  --subresource=finalizers --as=system:serviceaccount:monitoring:kps-kube-prometheus-stack-operator
+kubectl auth can-i update cassandradatacenters.cassandra.datastax.com \
+  --subresource=finalizers --as=system:serviceaccount:default:k8ssandra-operator
+```
+
+**Fix:** apply `manifests/openshift/rbac-finalizers.yaml`, which grants `update` alongside
+the charts' `patch`, then restart both operators. `scripts/deploy-openshift.sh` does this
+automatically. No chart fork is needed.
+
+---
+
+### One rack keeps failing after you fixed the config in the CR
+
+**Symptom:** you corrected `spec.cassandra.config` and re-applied. Some racks come up on the
+new config; one rack keeps restarting with the *old* error, long after the fix was applied.
+
+**Cause:** cass-operator rolls configuration **one rack at a time**, and will not advance to a
+rack that is unhealthy. A rack whose Cassandra cannot start is therefore deadlocked — it
+cannot receive the fix because it is broken, and it is broken because it lacks the fix.
+
+**Confirm it** by reading the config the operator actually rendered into each rack's
+StatefulSet, rather than trusting the CR:
+
+```bash
+for r in rack1 rack2 rack3; do
+  echo "--- $r ---"
+  kubectl get statefulset demo-dc1-$r-sts -n default \
+    -o jsonpath='{range .spec.template.spec.initContainers[?(@.name=="server-config-init")]}{.env[?(@.name=="CONFIG_FILE_DATA")].value}{end}' \
+    | python3 -m json.tool | grep -A2 cassandra-yaml
+done
+```
+
+A rack still showing the old keys is stuck.
+
+**Fix:** delete that rack's StatefulSet. cass-operator recreates it from the current
+CassandraDatacenter spec, and the PVC is retained, so a node that had already joined keeps
+its data:
+
+```bash
+kubectl delete statefulset demo-dc1-rack2-sts -n default
+```
+
+Deleting the *pod* is not enough — the pod is recreated from the StatefulSet template, which
+is what still holds the stale config.
+
+---
+
+### Cassandra container starts, then dies; readiness probe returns 500 forever
+
+**Symptom:** the pod reaches 2/3 Running, the management API answers liveness but returns
+`500` on `/api/v0/probes/readiness` indefinitely, and cass-operator logs
+`Deleting stuck pod ... Reason: Pod got stuck after Cassandra container terminated`.
+
+**Where to look.** Not the `cassandra` container — that log is the management API wrapper and
+shows only probe traffic. Cassandra's own log is tailed by the sidecar:
+
+```bash
+kubectl logs <pod> -c server-system-logger --tail=300 | grep -iE 'error|exception|fatal'
+```
+
+**One cause seen here — Cassandra 5.0 renamed settings:**
+
+```
+ConfigurationException: Config contains both old and new keys for the same configuration
+parameters, migrate old -> new: [key_cache_size_in_mb -> key_cache_size],
+[compaction_throughput_mb_per_sec -> compaction_throughput]
+```
+
+Cassandra 5.0 refuses to start when both spellings of a setting are present. The operator's
+own generated config already uses the **new** names, so adding an old name in
+`spec.cassandra.config.cassandraYaml` guarantees a collision — even though the old name is
+what most tuning guides, and the `/optimize` skill output, still say.
+
+**Fix:** use the new names, with units.
+
+| Old (do not use) | New |
+|---|---|
+| `key_cache_size_in_mb: 200` | `key_cache_size: 200MiB` |
+| `compaction_throughput_mb_per_sec: 32` | `compaction_throughput: 32MiB/s` |
+| `stream_throughput_outbound_megabits_per_sec: 800` | `stream_throughput_outbound: 100MiB/s` |
+
+This affects every profile in this repo, not just OpenShift — the Cassandra version is the
+same 5.0.8 everywhere.
+
+---
+
+### CassandraDatacenter rejected: "multiple nodes per worker without cpu and memory requests and limits"
+
+**Symptom:** the K8ssandraCluster is created but no CassandraDatacenter, StatefulSets, pods or
+PVCs ever appear. `kubectl get k8ssandracluster` shows the rejection in an ERROR column, and
+the operator logs `Failed to create datacenter` on a loop.
+
+```bash
+kubectl get k8ssandracluster demo -n default -o jsonpath='{.status.error}'
+```
+
+**Cause:** with `softPodAntiAffinity: true`, cass-operator's validating webhook requires
+**both** requests *and* limits for **both** cpu *and* memory. Omitting the CPU limit — which
+is the documented fix for the CFS throttling that capped an earlier run at 6.0/6.0 CPU — is
+therefore incompatible with co-locating Cassandra pods on a node.
+
+The two settings are mutually exclusive. Pick one:
+
+| Goal | Setting |
+|---|---|
+| One pod per node (enough workers) | No CPU limit. Best for throughput |
+| More pods than workers (scale demo on a small cluster) | `softPodAntiAffinity: true` **and** a CPU limit |
+
+**Fix, if you need the co-location:** set a limit high enough that it never binds. The
+OpenShift profile requests 12 and limits 14, two pods to a 31.5-CPU worker — the quota exists
+to satisfy the webhook, but Cassandra is not expected to reach it. Throttling only hurts when
+the quota is actually hit.
+
+Verify at rehearsal that it is not being hit:
+
+```bash
+kubectl exec <cassandra-pod> -c cassandra -- \
+  cat /sys/fs/cgroup/cpu.stat | grep throttled
+```
+
+Non-zero and climbing under load means the limit is binding — raise it, or drop
+`softPodAntiAffinity` and accept the smaller ring.
+
+**A note on why this diagnosis is easy to miss:** a webhook rejection means the
+CassandraDatacenter is never created, so `kubectl describe cassandradatacenter dc1` returns
+NotFound and tells you nothing. The reason lives on the *parent* K8ssandraCluster's
+`status.error`. `scripts/deploy-openshift.sh` now prints it on failure.
+
+---
+
+## OpenShift Issues
+
+The OpenShift profile (`manifests/openshift/`) targets an IBM TechZone cluster. These are
+the platform differences that actually bite.
+
+### `type: LoadBalancer` service never gets an EXTERNAL-IP
+
+**Cause:** the cluster has no cloud load-balancer integration. This is not a transient
+condition — ODF's own `s3` and `sts` services in `openshift-storage` have been `<pending>`
+since the cluster was built.
+
+**Fix:** expose through an OpenShift Route instead. See `manifests/openshift/routes.yaml`.
+A Route with edge TLS is strictly better for MCP anyway: the endpoint is real https, so
+`mcp-remote` no longer needs `--allow-http`.
+
+### Cassandra bootstrap stalls, and there are no AZs to put racks in
+
+**Cause:** this cluster has no `topology.kubernetes.io/zone` labels on any node, so the
+rack-per-AZ layout the EKS profile uses cannot be expressed.
+
+**Fix:** racks in Cassandra are a *logical* failure domain — they do not have to be AZs.
+`manifests/openshift/node-labels.sh` applies a synthetic `k8ssandra.io/rack` label to three
+workers and the CR's `nodeAffinityLabels` targets that instead. What matters is that there
+are three: the default `allocate_tokens_for_local_replication_factor=3` cannot allocate
+tokens with fewer, and the symptom is a stall rather than an error.
+
+Verify before deploying:
+
+```bash
+kubectl get nodes -L workload,k8ssandra.io/rack
+```
+
+### `helm install kube-prometheus-stack` fails on existing CRDs
+
+**Cause:** the `monitoring.coreos.com` CRDs are installed and owned by OpenShift's
+cluster-version-operator as part of `openshift-monitoring`.
+
+**Fix:** install with `--skip-crds` (this is what `scripts/deploy-openshift.sh` does) and use
+the platform's CRDs. Note the version gap — OpenShift ships prometheus-operator 0.81.0 CRDs
+while chart 91.4.0 bundles 0.94.0. The chart's `Prometheus` CR was verified to validate
+against the older CRDs, but re-check after any chart bump:
+
+```bash
+helm template kps prometheus-community/kube-prometheus-stack --version <ver> \
+  --namespace monitoring --skip-crds -f manifests/openshift/values-kube-prometheus-stack.yaml \
+  | kubectl apply --dry-run=server -f -
+```
+
+### Two Prometheus operators reconciling the same objects
+
+**Cause:** OpenShift's operator is scoped to `openshift-monitoring` and
+`openshift-user-workload-monitoring`. Ours is scoped to `default` and `monitoring`. That
+separation holds **only while user-workload monitoring is disabled**. Enabling UWM makes its
+operator start watching ServiceMonitors in `default` too, and the two will fight.
+
+**Fix:** leave UWM off, or drop kube-prometheus-stack's Prometheus and point Grafana at
+OpenShift's Thanos querier instead.
+
+### Pod rejected: "unable to validate against any security context constraint"
+
+**Cause:** something pinned a `runAsUser` that `restricted-v2` will not admit. Pods get
+arbitrary UIDs from the namespace's range (`openshift.io/sa.scc.uid-range`, e.g.
+`1000000000/10000`); Grafana's chart default of 472 and Prometheus's 1000 both fail.
+
+**Fix:** null the UID out so the namespace range applies — this is what
+`manifests/openshift/values-kube-prometheus-stack.yaml` does for Grafana and Prometheus,
+which run in `monitoring`.
+
+**Why the Cassandra pods do not need this, and why that is fragile.** They run in `default`,
+and OpenShift labels `default` with `pod-security.kubernetes.io/enforce: privileged` — it is
+exempt from Pod Security Admission. Observed on this cluster:
+
+```bash
+$ kubectl get pod demo-dc1-rack1-sts-0 -o jsonpath='{.spec.securityContext}'
+{"fsGroup":999,"runAsGroup":999,"runAsNonRoot":true,"runAsUser":999}
+
+$ kubectl get ns default -o jsonpath='{.metadata.labels}'
+... "pod-security.kubernetes.io/enforce":"privileged" ...
+```
+
+UID 999 is cass-operator's own value. It is **not** from the namespace's
+`openshift.io/sa.scc.uid-range` (`1000000000/10000`), and it was not stripped despite
+cass-operator's `openshift.mode: auto`. The pods are admitted because the namespace is
+exempt, not because the security context was adjusted.
+
+**The consequence:** moving this workshop into a dedicated project (`oc new-project k8ssandra`)
+would subject it to PSA `restricted` and very likely break Cassandra startup. If you do move
+it, expect to grant an SCC:
+
+```bash
+oc adm policy add-scc-to-user anyuid -z default -n <namespace>
+```
+
+Last resort, per ServiceAccount:
+
+```bash
+oc adm policy add-scc-to-user anyuid -z <serviceaccount> -n <namespace>
+```
+
+### Medusa cannot reach the NooBaa bucket
+
+**Cause:** NooBaa speaks S3 but is not AWS, so `storageProvider` must be `s3_compatible`
+with an explicit `host`/`port` rather than `s3` with a region. Its in-cluster endpoint also
+presents a self-signed certificate.
+
+**Fix:** the CR sets `host: s3.openshift-storage.svc.cluster.local`, `port: 443`,
+`secure: true`, `sslVerify: false`. Traffic never leaves the cluster network.
+
+Note the credential shape mismatch: an ObjectBucketClaim produces a Secret with
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, but Medusa wants a single `credentials` key in
+INI format. `scripts/deploy-openshift.sh` translates between them — if you create the bucket
+by hand, you must do the same.
+
+---
+
 ## Cassandra Driver Issues
 
 ### "Connection refused" or timeout when connecting from local machine

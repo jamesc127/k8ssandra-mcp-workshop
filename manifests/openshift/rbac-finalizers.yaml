@@ -1,0 +1,95 @@
+# OpenShift-only RBAC supplement for the kube-prometheus-stack operator AND
+# the k8ssandra-operator.
+#
+# WHY THIS EXISTS
+#
+# OpenShift enables the OwnerReferencesPermissionEnforcement admission plugin,
+# which vanilla Kubernetes does not. Under it, creating a resource whose
+# ownerReference sets blockOwnerDeletion: true requires the creator to hold
+# **update** on the OWNER's `finalizers` subresource.
+#
+# The kube-prometheus-stack chart grants only `patch` on those subresources:
+#
+#   ["monitoring.coreos.com"] | ["prometheuses","prometheuses/finalizers",...] | ["patch"]
+#
+# which is enough on EKS and not enough here. The failure is indirect and easy
+# to misread — the Prometheus CR is created, but its StatefulSet never appears:
+#
+#   Reconciled=False reason=ReconciliationFailed
+#   msg=synchronizing PrometheusRules failed: failed to create or update ConfigMap
+#       "...-rulefiles-0": is forbidden: cannot set blockOwnerDeletion if an
+#       ownerReference refers to a resource you can't set finalizers on
+#
+# The k8ssandra-operator hits the same wall from the other direction: it creates
+# a ServiceMonitor owned by the CassandraDatacenter, and cannot set finalizers on
+# that owner. The reconcile then ABORTS at telemetry, which is why Reaper never
+# gets created either — the symptom looks nothing like the cause:
+#
+#   ERROR could not create ServiceMonitor resource
+#   servicemonitors.monitoring.coreos.com "demo-dc1-cass-servicemonitor" is
+#   forbidden: cannot set blockOwnerDeletion if an ownerReference refers to a
+#   resource you can't set finalizers on
+#
+# Check these with the --subresource flag, NOT the `resource/finalizers` slash
+# form, which silently reports the wrong answer:
+#
+#   kubectl auth can-i update cassandradatacenters.cassandra.datastax.com \
+#     --subresource=finalizers \
+#     --as=system:serviceaccount:default:k8ssandra-operator -n default
+#
+# Granting `update` alongside the charts' `patch` fixes both without forking
+# either chart. Applied by scripts/deploy-openshift.sh.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kps-finalizers-openshift
+rules:
+  - apiGroups: ["monitoring.coreos.com"]
+    resources:
+      - alertmanagers/finalizers
+      - prometheuses/finalizers
+      - prometheusagents/finalizers
+      - thanosrulers/finalizers
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kps-finalizers-openshift
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kps-finalizers-openshift
+subjects:
+  - kind: ServiceAccount
+    name: kps-kube-prometheus-stack-operator
+    namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8ssandra-operator-finalizers-openshift
+rules:
+  - apiGroups: ["cassandra.datastax.com"]
+    resources: ["cassandradatacenters/finalizers"]
+    verbs: ["update"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["servicemonitors/finalizers"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8ssandra-operator-finalizers-openshift
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8ssandra-operator-finalizers-openshift
+subjects:
+  - kind: ServiceAccount
+    name: k8ssandra-operator
+    namespace: default
+  - kind: ServiceAccount
+    name: k8ssandra-operator-cass-operator
+    namespace: default

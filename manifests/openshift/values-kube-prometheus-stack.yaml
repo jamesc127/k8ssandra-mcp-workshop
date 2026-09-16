@@ -1,0 +1,134 @@
+# kube-prometheus-stack values for OpenShift.
+#
+# Installed by scripts/deploy-openshift.sh into namespace `monitoring` with
+# release name `kps`, and ALWAYS with --skip-crds. Three OpenShift-specific
+# constraints drive everything here:
+#
+# 1. CRDs ARE ALREADY OWNED BY OPENSHIFT. The monitoring.coreos.com CRDs
+#    (ServiceMonitor, Prometheus, ...) are installed by the cluster-version
+#    operator as part of openshift-monitoring, at prometheus-operator 0.81.0.
+#    Helm must not try to manage them — hence --skip-crds.
+#
+# 2. TWO PROMETHEUS OPERATORS MUST NOT FIGHT. OpenShift's own operator is scoped
+#    to openshift-monitoring and openshift-user-workload-monitoring. Ours is
+#    scoped below to just `default` and `monitoring`. This only stays true while
+#    user-workload monitoring is DISABLED — if you enable UWM later, its
+#    operator will also start watching ServiceMonitors in `default` and the two
+#    will reconcile the same objects.
+#
+# 3. restricted-v2 ASSIGNS UIDs. The chart's defaults pin runAsUser (Grafana
+#    uses 472, Prometheus 1000), which OpenShift rejects. Every hardcoded UID is
+#    nulled out below so the namespace's UID range applies instead. If anything
+#    still fails to admit, the escape hatch is granting anyuid — see
+#    docs/TROUBLESHOOTING.md.
+
+# Scope our operator so it never looks at openshift-* namespaces.
+prometheusOperator:
+  namespaces:
+    releaseNamespace: true
+    additional:
+      - default
+  # The admission webhook is served by a job that patches its own certificate,
+  # and that job's security context does not admit cleanly under restricted-v2.
+  # Disabling it costs PrometheusRule validation, which this workshop does not use.
+  admissionWebhooks:
+    enabled: false
+    patch:
+      enabled: false
+  tls:
+    enabled: false
+  # Let OpenShift assign UIDs.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+
+alertmanager:
+  # Nothing here alerts anyone; it would just consume a node.
+  enabled: false
+
+# The bundled rules alert on kube-apiserver, etcd, kubelet and node-exporter
+# metrics that this stack no longer scrapes (see below) — every one of them
+# would fire or sit in NoData. OpenShift's own monitoring already covers them.
+defaultRules:
+  create: false
+
+# OpenShift already scrapes these and we cannot read its kubelet/etcd endpoints
+# from a second stack without extra RBAC. Turn off the cluster-level scrapers
+# and keep this stack focused on Cassandra.
+kubeApiServer:
+  enabled: false
+kubelet:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+coreDns:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeStateMetrics:
+  enabled: false
+nodeExporter:
+  enabled: false
+
+grafana:
+  enabled: true
+  adminUser: admin
+  # Override at install time: --set grafana.adminPassword=...
+  adminPassword: workshop
+  defaultDashboardsEnabled: false
+  # No PVC: dashboards come from ConfigMaps via the sidecar, so persistence
+  # would only add an fsGroup problem for nothing.
+  persistence:
+    enabled: false
+  sidecar:
+    dashboards:
+      enabled: true
+      searchNamespace: ALL
+      label: grafana_dashboard
+  # Chart default is runAsUser 472, which restricted-v2 rejects.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: null
+    runAsGroup: null
+    fsGroup: null
+  # OpenShift serves Grafana through a Route (manifests/openshift/routes.yaml),
+  # not an Ingress or LoadBalancer.
+  service:
+    type: ClusterIP
+  nodeSelector:
+    workload: utility
+
+prometheus:
+  prometheusSpec:
+    retention: 12h
+    # The operator writes its ServiceMonitor into `default`, not into the
+    # release namespace. Without this, Prometheus ignores it.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: "1"
+        memory: 6Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: ocs-storagecluster-ceph-rbd
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 20Gi
+    # Chart default pins runAsUser 1000 / fsGroup 2000.
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: null
+      runAsGroup: null
+      fsGroup: null
+    nodeSelector:
+      workload: utility

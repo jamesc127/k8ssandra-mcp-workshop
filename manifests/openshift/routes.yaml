@@ -1,0 +1,63 @@
+# OpenShift Routes replacing the AWS NLB.
+#
+# A side benefit over the EKS path: edge TLS termination means these are real
+# https endpoints, so `npx mcp-remote` no longer needs the --allow-http flag
+# that a plain-HTTP NLB required.
+#
+# Hostnames are assigned from the cluster's ingress domain
+# (apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com) — leaving .spec.host unset
+# lets OpenShift generate <name>-<namespace>.<ingress-domain>.
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: easy-cass-mcp
+  namespace: default
+  labels:
+    app: easy-cass-mcp
+spec:
+  to:
+    kind: Service
+    name: easy-cass-mcp
+  port:
+    targetPort: mcp
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+# Reaper's web UI. Service name is derived from the CR: <cluster>-<dc>-reaper-service.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: reaper
+  namespace: default
+spec:
+  to:
+    kind: Service
+    name: demo-dc1-reaper-service
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+---
+# Grafana, in the monitoring namespace where kube-prometheus-stack installs it.
+# A Route beats `kubectl port-forward` for a live demo: port-forwards drop, and
+# a dead tunnel mid-talk looks like a product failure.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  to:
+    kind: Service
+    name: kps-grafana
+  port:
+    # Must be the service's port NAME, not its number. kps-grafana exposes
+    # port 80 named "http-web"; a Route pointing at `80` resolves to nothing and
+    # the router answers 503 even though the pod is healthy.
+    targetPort: http-web
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

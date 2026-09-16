@@ -1,8 +1,85 @@
-# K8ssandra on EKS Workshop
+# K8ssandra Workshop — OpenShift and EKS
 
-Deploy a production-style Apache Cassandra cluster on Amazon EKS using k8ssandra-operator, then manage it with AI tooling via Claude Desktop and MCP.
+Deploy a production-style Apache Cassandra cluster on Kubernetes using k8ssandra-operator,
+then manage it with AI tooling via Claude Desktop and MCP.
 
-## Architecture
+> **Platform note:** the live target is **OpenShift on IBM Cloud**. The EKS request was
+> declined, so the workshop runs on an IBM TechZone OpenShift cluster. The EKS manifests are
+> kept and still work, but the OpenShift path is what gets rehearsed.
+>
+> | | OpenShift | EKS |
+> |---|---|---|
+> | Manifests | `manifests/openshift/` | `manifests/infra/`, `manifests/cassandra/` |
+> | Deploy | `scripts/deploy-openshift.sh` | `scripts/deploy.sh` |
+> | Racks | Synthetic, per node | Per availability zone |
+> | Storage | Ceph RBD (ODF) | EBS gp3 |
+> | Backups | NooBaa, in-cluster S3 | AWS S3 + IRSA |
+> | MCP exposure | Route, edge TLS | Internet-facing NLB |
+
+## Quick Start (OpenShift)
+
+```bash
+export KUBECONFIG=$PWD/conf_kubeconfig_itz-ckzpiv.conf
+
+./manifests/openshift/node-labels.sh     # 3 racks + tainted loadgen + utility
+./scripts/deploy-openshift.sh
+```
+
+**Step 1 — label the nodes.** OpenShift gives us no node-group configuration, so the layout
+the eksctl ClusterConfig expresses declaratively is applied imperatively:
+
+| Nodes | Label | Purpose |
+|---|---|---|
+| worker-1/2/3 | `workload=cassandra`, `k8ssandra.io/rack=rack{1,2,3}` | One Cassandra pod each |
+| worker-4 | `workload=loadgen` **+ taint** | Load generator only |
+| worker-5 | `workload=utility` | Prometheus, Grafana, Reaper, operators, MCP |
+
+The rack labels are the important part. This cluster has **no `topology.kubernetes.io/zone`
+labels at all**, so rack-per-AZ is impossible. Cassandra treats a rack as a *logical* failure
+domain, so we map racks to nodes instead — and three of them is non-negotiable, because the
+default `allocate_tokens_for_local_replication_factor=3` cannot allocate tokens with fewer
+and the bootstrap stalls rather than erroring.
+
+**Step 2 — deploy.** Eight steps: preflight, cert-manager, kube-prometheus-stack,
+k8ssandra-operator, the NooBaa bucket, the Cassandra cluster, easy-cass-mcp + Routes, then
+the endpoint summary. No S3 bucket or IAM role to request beforehand — Medusa's bucket is
+provisioned in-cluster by an ObjectBucketClaim.
+
+Differences worth knowing:
+
+- **`--skip-crds` is mandatory** for kube-prometheus-stack. The `monitoring.coreos.com` CRDs
+  are owned by OpenShift's cluster-version-operator.
+- **metrics-server is not installed** — OpenShift already serves `metrics.k8s.io`.
+- **No `type: LoadBalancer`.** It never provisions on this cluster; everything is exposed by
+  Route. The upside is that the MCP endpoint is real https, so `mcp-remote` drops `--allow-http`.
+- **The `default` namespace is load-bearing.** Cassandra pods run as `runAsUser: 999` —
+  cass-operator's own value, not stripped and not from the namespace's UID range. They are
+  admitted because OpenShift labels `default` with
+  `pod-security.kubernetes.io/enforce: privileged`, exempting it from Pod Security Admission.
+  Moving the workshop to a dedicated project would subject it to PSA `restricted` and likely
+  break Cassandra startup. Grafana and Prometheus live in `monitoring`, which is *not*
+  exempt — which is why their hardcoded UIDs are nulled out in the Helm values.
+- Two settings that look independent are not: **`softPodAntiAffinity` requires a CPU limit.**
+  cass-operator's webhook rejects the datacenter with *"multiple nodes per worker without cpu
+  and memory requests and limits"* otherwise — so co-locating pods and omitting the CPU limit
+  (the CFS-throttling fix) are mutually exclusive. The OpenShift profile sets a limit high
+  enough not to bind.
+- **Cassandra 5.0 renamed several config keys** and refuses to start if both spellings are
+  present. Use `key_cache_size`, `compaction_throughput`, `stream_throughput_outbound` with
+  units — never the `*_in_mb` / `*_mb_per_sec` / `*_megabits_per_sec` forms that most tuning
+  guides still show.
+
+Teardown: `./scripts/teardown-openshift.sh`
+
+### Credentials
+
+`conf_kubeconfig_*.conf`, `.env`, and `vm_ssh_key_*.vm` are **gitignored and must stay that
+way**. `.env` holds the OpenShift console URL, API URL, `kubeadmin` credentials, and bastion
+SSH details.
+
+---
+
+## Architecture (EKS)
 
 Two cluster profiles ship with this repo. The **trial** profile (5 workers) is the
 default and is what `scripts/deploy.sh` targets; the **full** profile (10 workers)
@@ -72,7 +149,7 @@ Cassandra 5.0+; the operator emits a deprecation warning if you set the field.
 - Node.js 18+ (for the `mcp-remote` bridge)
 - Claude Desktop (for MCP integration)
 
-## Quick Start
+## Quick Start (EKS)
 
 ### 1. Provision the cluster
 
@@ -361,7 +438,14 @@ k8ssandra-workshop/
 │   │   ├── medusa-backup-job.yaml             # On-demand MedusaBackupJob (full)
 │   │   └── cassandra-no-operator.yaml         # Raw StatefulSet fallback (unused)
 │   ├── monitoring/
-│   │   └── values-kube-prometheus-stack.yaml  # Prometheus + Grafana Helm values
+│   │   └── values-kube-prometheus-stack.yaml  # Prometheus + Grafana Helm values (EKS)
+│   ├── openshift/                             # THE ACTIVE PROFILE
+│   │   ├── node-labels.sh                     # Racks, loadgen taint, utility label
+│   │   ├── k8ssandra-cluster.yaml             # CR — node-racks, Ceph RBD, NooBaa S3
+│   │   ├── medusa-obc.yaml                    # ObjectBucketClaim (NooBaa bucket)
+│   │   ├── easy-cass-mcp-service.yaml         # ClusterIP (no LoadBalancer here)
+│   │   ├── routes.yaml                        # Routes: MCP, Reaper, Grafana
+│   │   └── values-kube-prometheus-stack.yaml  # Helm values, restricted-v2 safe
 │   ├── apps/
 │   │   ├── easy-cass-mcp-deployment.yaml      # MCP server deployment
 │   │   └── easy-cass-mcp-service.yaml         # Internet-facing NLB service
@@ -375,8 +459,10 @@ k8ssandra-workshop/
 │   ├── architecture-diagrams.md               # Topology, data flow, CRD relationships
 │   └── mcp-skills-cassandra-analysis.md       # Writeup of the 9-node / 100k run
 └── scripts/
-    ├── deploy.sh                              # 9-step deployment orchestration
-    └── teardown.sh                            # Resource cleanup
+    ├── deploy.sh                              # EKS: 9-step deployment orchestration
+    ├── teardown.sh                            # EKS: resource cleanup
+    ├── deploy-openshift.sh                    # OpenShift: 8-step deployment
+    └── teardown-openshift.sh                  # OpenShift: resource cleanup
 ```
 
 ## Key Gotchas

@@ -1,0 +1,23 @@
+# ClusterIP service for easy-cass-mcp on OpenShift.
+#
+# The EKS profile uses type: LoadBalancer with an AWS NLB annotation. That does
+# not work here: this cluster has no cloud load-balancer integration, and
+# LoadBalancer services stay <pending> indefinitely (ODF's own s3 and sts
+# services have been pending since the cluster was built). Exposure is via an
+# OpenShift Route instead — see routes.yaml.
+apiVersion: v1
+kind: Service
+metadata:
+  name: easy-cass-mcp
+  namespace: default
+  labels:
+    app: easy-cass-mcp
+spec:
+  type: ClusterIP
+  selector:
+    app: easy-cass-mcp
+  ports:
+    - name: mcp
+      port: 8000
+      targetPort: 8000
+      protocol: TCP

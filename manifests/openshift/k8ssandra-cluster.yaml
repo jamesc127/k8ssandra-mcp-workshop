@@ -1,0 +1,172 @@
+# OPENSHIFT PROFILE — sized for the 5-worker IBM TechZone cluster.
+#
+# Differences from the EKS profiles (manifests/cassandra/), all forced by the
+# platform rather than chosen:
+#   - Racks map to NODES, not AZs. This cluster has no
+#     topology.kubernetes.io/zone labels at all, so rack-per-AZ is impossible.
+#     manifests/openshift/node-labels.sh applies k8ssandra.io/rack instead.
+#   - Storage is Ceph RBD via ODF, not EBS gp3. There is no iops/throughput
+#     knob; the external Ceph cluster provides the performance.
+#   - Medusa backs up to NooBaa's in-cluster S3, not AWS S3, so there is no
+#     IRSA service account — credentials come from an ObjectBucketClaim.
+#
+# cass-operator detects OpenShift automatically (openshift.mode=auto) and omits
+# runAsUser/runAsGroup so the restricted-v2 SCC can assign the namespace UID
+# range. No anyuid grant should be needed.
+apiVersion: k8ssandra.io/v1alpha1
+kind: K8ssandraCluster
+metadata:
+  name: demo
+  namespace: default
+spec:
+  cassandra:
+    serverVersion: "5.0.8"
+    datacenters:
+      - metadata:
+          name: dc1
+        # Deploy at 3 (one pod per node), scale to 6 live during the talk.
+        #
+        # Ring size must stay a multiple of 3 so the racks stay balanced.
+        size: 3
+
+        # This cluster has only 3 Cassandra nodes, and cass-operator's default
+        # hard pod anti-affinity allows one Cassandra pod per node — which would
+        # fix the ring at 3 and make the scale-under-load demo impossible.
+        # Allowing 2 pods per node gets us 3 -> 6 with racks still balanced
+        # (2 per rack), and 2 x 12 CPU fits inside a 32 vCPU worker.
+        #
+        # Be honest about this on stage: two replicas on one node means losing
+        # that node costs two of three replicas, so an RF=3 keyspace at
+        # LOCAL_QUORUM would go unavailable for those ranges. The /expert skill
+        # calls this out as "defensible only for dev/CI/workshop" and it is
+        # right. The EKS full profile (9 nodes, 9 pods) does not need it.
+        softPodAntiAffinity: true
+
+        # Synthetic racks. Cassandra treats a rack as a logical failure domain —
+        # it does not care whether that maps to an AZ, a physical rack, or a
+        # node. What matters is that there are 3 of them: the default
+        # allocate_tokens_for_local_replication_factor=3 cannot allocate tokens
+        # with fewer, and the bootstrap stalls rather than erroring.
+        racks:
+          - name: rack1
+            nodeAffinityLabels:
+              k8ssandra.io/rack: rack1
+          - name: rack2
+            nodeAffinityLabels:
+              k8ssandra.io/rack: rack2
+          - name: rack3
+            nodeAffinityLabels:
+              k8ssandra.io/rack: rack3
+
+        storageConfig:
+          cassandraDataVolumeClaimSpec:
+            # ODF default StorageClass. Ceph RBD is block storage (RWO), which
+            # is what Cassandra wants. Note the binding mode is Immediate, not
+            # WaitForFirstConsumer — fine here because RBD volumes are network
+            # attached and not pinned to a node.
+            storageClassName: ocs-storagecluster-ceph-rbd
+            accessModes:
+              - ReadWriteOnce
+            # Medusa stages backups on this same volume, and a full backup pins
+            # sstables against deletion for the whole upload window while
+            # compaction writes new ones. 50Gi holds ~11 GB of live data plus
+            # compaction headroom plus one full backup.
+            resources:
+              requests:
+                storage: 50Gi
+
+        resources:
+          requests:
+            cpu: "12"
+            memory: "32Gi"
+          limits:
+            # A CPU limit is MANDATORY here, and that is not a free choice.
+            # cass-operator's validating webhook rejects the datacenter with
+            #   "attempted to use multiple nodes per worker without cpu and
+            #    memory requests and limits"
+            # whenever softPodAntiAffinity is on. So co-locating pods and
+            # omitting the CPU limit are mutually exclusive — and omitting the
+            # limit is exactly the fix for the CFS throttling that capped the
+            # previous run at 6.0/6.0 CPU while the hosts idled at 30-70%.
+            #
+            # The way out is a limit set high enough that it never binds.
+            # 2 pods x 14 = 28 on a 31.5-CPU worker, against a request of 12
+            # that Cassandra is not expected to exceed under this load. Throttling
+            # only hurts when the quota is actually reached; a generous limit
+            # satisfies the webhook without reintroducing the ceiling.
+            #
+            # Watch for it anyway at rehearsal: if container_cpu_cfs_throttled
+            # is non-zero under load, raise this or drop softPodAntiAffinity.
+            cpu: "14"
+            memory: "32Gi"
+
+        config:
+          cassandraYaml:
+            # NOTE: Cassandra 5.0 renamed several of these settings and refuses
+            # to start if both the old and new spellings are present:
+            #   "Config contains both old and new keys for the same configuration
+            #    parameters, migrate old -> new"
+            # The operator's own defaults already use the new names, so only the
+            # new ones may appear here — and they require units.
+            dynamic_snitch_badness_threshold: 0.1
+            key_cache_size: 200MiB
+            stream_throughput_outbound: 100MiB/s
+            compaction_throughput: 32MiB/s
+          jvmOptions:
+            heapSize: 8G
+            gc: G1GC
+
+        telemetry:
+          prometheus:
+            enabled: true
+            commonLabels:
+              release: kps
+
+  reaper:
+    deploymentMode: PER_DC
+    storageType: cassandra
+    keyspace: reaper_db
+    heapSize: 2Gi
+    autoScheduling:
+      enabled: false
+    resources:
+      requests:
+        cpu: "1"
+        memory: "3Gi"
+      limits:
+        memory: "4Gi"
+    telemetry:
+      prometheus:
+        enabled: true
+        commonLabels:
+          release: kps
+
+  medusa:
+    storageProperties:
+      # NooBaa speaks the S3 API but is not AWS, so this is s3_compatible with
+      # an explicit host rather than storageProvider: s3 with a region.
+      storageProvider: s3_compatible
+      host: s3.openshift-storage.svc.cluster.local
+      port: 443
+      secure: true
+      # NooBaa's in-cluster endpoint presents a self-signed certificate. The
+      # traffic never leaves the cluster network.
+      sslVerify: false
+      region: us-east-1  # ignored by NooBaa, but the client requires a value
+      # Both of these are filled in by scripts/deploy-openshift.sh from the
+      # ObjectBucketClaim — the bucket name is generated, so it cannot be
+      # hardcoded here.
+      bucketName: REPLACE_WITH_OBC_BUCKET
+      storageSecretRef:
+        name: medusa-bucket-key
+      prefix: demo
+      transferMaxBandwidth: 150MB/s
+      concurrentTransfers: 4
+      maxBackupCount: 3
+    containerResources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        memory: "4Gi"
+    purgeBackups: true

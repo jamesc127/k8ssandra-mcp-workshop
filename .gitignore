@@ -2,8 +2,18 @@
 *.swp
 *.swo
 *~
+.claude/worktrees/
+
+# Credentials — never commit.
+# Patterns are deliberately broad: the TechZone downloads are named
+# conf_kubeconfig_<cluster>.conf and vm_ssh_key_<cluster>.vm, which the old
+# `kubeconfig` / `*.key` / `*.pem` patterns did not match.
 .env
-kubeconfig
+.env.*
+*kubeconfig*
+*.conf
+vm_ssh_key*
+*.vm
 *.pem
 *.key
-.claude/worktrees/
+id_rsa*

@@ -9,6 +9,15 @@
 
 **Style:** Heavy live demo — Claude Code open on screen throughout Parts 5-8.
 
+> **Platform:** this runs on **OpenShift 4.19 on IBM Cloud** (the EKS request was declined).
+> Three platform differences change what is on screen, and each is worth naming rather than
+> hiding — they are all good teaching moments:
+> - **Racks map to nodes, not AZs.** This cluster has no zone labels at all.
+> - **Backups go to NooBaa**, OpenShift's in-cluster S3, not AWS S3. No IAM to request.
+> - **Everything is exposed by Route**, not a load balancer. The MCP endpoint is real https.
+>
+> The ring is 3 nodes scaling to 6, not 6 to 9 — the cluster has three Cassandra workers.
+
 > The event was sold on *"a clear introduction to k8ssandra, what it is, why it
 > matters, and how it fits into modern Cassandra operations."* Parts 4 and 5 are
 > 24 minutes — 40% of the talk — and exist to deliver exactly that. The MCP and
@@ -25,7 +34,7 @@
 | 3 | Cassandra meets Kubernetes: hope and pain | 4 | 12 |
 | 4 | **★ The k8ssandra project** | 12 | 24 |
 | 5 | **★ The whole suite, live** | 12 | 36 |
-| 6 | Scale under load: 6 → 9 | 6 | 42 |
+| 6 | Scale under load: 3 → 6 | 6 | 42 |
 | 7 | easy-cass-mcp: giving AI eyes on your cluster | 7 | 49 |
 | 8 | Skills: Cassandra expertise as markdown | 8 | 57 |
 | 9 | Closing — the stack of the future | 3 | 60 |
@@ -45,19 +54,19 @@ kubectl get pods -n default -o wide
 ```
 
 Point at what is on screen, in this order:
-- **6 Cassandra pods**, named `demo-dc1-rack1-sts-*`, `rack2`, `rack3` — three racks,
-  one per availability zone
+- **3 Cassandra pods**, named `demo-dc1-rack1-sts-0`, `rack2`, `rack3` — three racks
 - A **medusa sidecar** in every Cassandra pod
 - A **Reaper** pod
 - **easy-cass-mcp**
 - Over in `monitoring`: **Prometheus and Grafana**
 
 ```bash
-kubectl get nodes -L topology.kubernetes.io/zone,workload
+kubectl get nodes -L workload,k8ssandra.io/rack
 ```
 
-- Cassandra nodes spread 3/3/3 across `us-east-1a/b/c`
+- Three workers labelled `rack1`, `rack2`, `rack3`
 - One node tainted `workload=loadgen` — nothing but the load generator runs there
+- One `utility` node carrying Prometheus, Grafana, Reaper and the operators
 
 Then switch to the Grafana tab, already showing an hour of history at
 «MEASURE AT REHEARSAL» ops/sec.
@@ -73,8 +82,8 @@ Then switch to the Grafana tab, already showing an hour of history at
 - Thesis: AI tooling is changing how we operate databases — but there are multiple
   approaches with real tradeoffs
 - Roadmap: hand-editing → operators → the k8ssandra project → MCP → skills
-- _"By the end of this talk I'm going to add three Cassandra nodes and restart a
-  fourth, in front of you, while a load test is running — and then ask Claude what
+- _"By the end of this talk I'm going to double the size of this cluster and kill a
+  node, in front of you, while a load test is running — and then ask Claude what
   happened."_
 
 ---
@@ -219,40 +228,51 @@ kubectl get medusabackupjob -n default -w
 ```
 
 Talk while it uploads (~«MEASURE AT REHEARSAL»):
-- **IRSA** — the pods assume an IAM role. There is no AWS access key anywhere in
-  this cluster. Show `kubectl exec ... -c medusa -- env | grep AWS_`
+- **The bucket is in-cluster.** NooBaa — OpenShift Data Foundation's S3 gateway —
+  provisioned it from a nine-line ObjectBucketClaim. No AWS account, no IAM request,
+  no ticket to a cloud team. Medusa just sees an S3 endpoint.
+- Worth naming: Medusa is configured `s3_compatible` rather than `s3`, because
+  NooBaa speaks the API without being AWS. That portability is the point.
 - `backupType: full` so every sstable re-uploads and you can actually watch it
 
 Then the payoff:
 
 ```bash
 kubectl get medusabackup -n default
-aws s3 ls "s3://$BUCKET/demo/" --recursive --human-readable --summarize
+kubectl get objectbucketclaim medusa-backups -n default
 ```
 
-Per-node backup sizes, in S3, from a CR block with nine lines in it.
+Per-node backup sizes, in object storage that did not exist ten minutes ago.
 
 ---
 
-## Part 6 (~6 min) — Scale Under Load: 6 → 9
+## Part 6 (~6 min) — Scale Under Load: 3 → 6
 
 If you take one thing from this session: **scaling Apache Cassandra under load is
 no longer an event.**
 
 ```bash
 kubectl patch k8ssandracluster demo -n default --type=json \
-  -p='[{"op":"replace","path":"/spec/cassandra/datacenters/0/size","value":9}]'
+  -p='[{"op":"replace","path":"/spec/cassandra/datacenters/0/size","value":6}]'
 ```
 
 **Start it, then talk over it** — bootstraps are serial and this takes ~6-7 minutes.
 Material to fill the time:
 
-- Each rack goes 2 → 3. `size` must be a multiple of 3 or the racks go unbalanced —
-  that constraint is *why* this is 6 → 9 and not 3 → 6 → 9
-- **Rack-aware placement is the thing that failed last time.** Two racks across two
-  AZs, and Cassandra's default `allocate_tokens_for_local_replication_factor=3`
-  couldn't allocate tokens — bootstrap just stalled. Three AZs fixed it. Worth
-  telling as a failure, because it's the kind that looks like a hang, not an error
+- Each rack goes 1 → 2. `size` must be a multiple of 3 or the racks go unbalanced
+- **Be straight about the compromise.** This cluster has three Cassandra workers, so
+  doubling the ring means two replicas land on each node. For an RF=3 keyspace at
+  LOCAL_QUORUM, losing one node now costs two of three replicas. You would not do
+  this in production — and the `/expert` skill says exactly that, which is a nice
+  set-up for Part 8. Say it out loud; the audience has three-node clusters too.
+- **Rack-aware placement is the thing that failed last time.** Two racks, and
+  Cassandra's default `allocate_tokens_for_local_replication_factor=3` couldn't
+  allocate tokens — bootstrap just stalled. Worth telling as a failure, because it's
+  the kind that looks like a hang, not an error.
+- **And racks don't have to be AZs.** This cluster has no zone labels at all, so the
+  racks here are three worker nodes with a label I applied. A rack is a *logical*
+  failure domain — map it to whatever your real one is. That reframing is the most
+  portable idea in this section.
 - **Zero-Copy Streaming**: sstables stream at the file level, not row by row.
   Last run: 42-138 MB per node in 6.7-9.8 seconds
 - What the operator is doing: one node at a time, waiting for each to finish joining
@@ -262,7 +282,7 @@ Material to fill the time:
 Come back at the end of Part 7 for `nodetool status` and the ownership shift.
 
 **Expected (re-measure at rehearsal):** rate held within 1%, zero NB errors, RF=3
-maintained throughout, ownership settling from ~50% to ~33% per node.
+maintained throughout, ownership settling from 100% to ~50% per node.
 
 ---
 
@@ -272,7 +292,7 @@ maintained throughout, ownership settling from ~50% to ~33% per node.
   models access to external tools. Server exposes tools → Claude calls them →
   results flow back as context.
 - **easy-cass-mcp:** domain-specific MCP server that speaks CQL fluently, deployed
-  in-cluster. Claude Code → internet-facing NLB → easy-cass-mcp pod → Cassandra pods.
+  in-cluster. Claude Code → OpenShift Route (edge TLS) → easy-cass-mcp pod → Cassandra pods.
 
   | Tool | What it does |
   |---|---|
@@ -372,7 +392,17 @@ the table-level setting is silently meaningless without the YAML setting.
 | `key_cache_size_in_mb: 0` vs `caching: {keys: ALL}` | `key_cache_size_in_mb: 200` |
 | 16 KiB compression chunks, ~250x I/O amp on point lookups | `chunk_length_in_kb: 4` |
 | Soft anti-affinity that no-ops when every node has a Cassandra pod | Dedicated **tainted** loadgen node |
-| `softPodAntiAffinity` — `/expert` called it "defensible only for dev/CI/workshop, not for any RF=3 cluster where availability matters" | **Rack-per-AZ, hard anti-affinity** |
+| `softPodAntiAffinity` — `/expert` called it "defensible only for dev/CI/workshop, not for any RF=3 cluster where availability matters" | **Three racks, and the skill's objection now stated out loud rather than quietly ignored** — see the note below |
+
+**The one the skill is still right about.** Four of those five are fixed. The fifth —
+`softPodAntiAffinity` — is still on, because three Cassandra workers cannot host a
+six-node ring any other way. Rather than hide it, put it on screen: the skill's
+critique is correct, the constraint is real, and the honest answer is "this is a
+workshop cluster, and here is exactly what I would change in production."
+
+That is a better ending than a clean sweep would have been. A tool that tells you
+something inconvenient, that you then choose to accept with your eyes open, is more
+useful than one that only confirms what you already did.
 
 Run `/diagnose` live against the current cluster and show the difference.
 
@@ -416,20 +446,20 @@ Full detail in the README; this is the timing skeleton.
 | Clock | Action |
 |---|---|
 | T-180 | `kubectl get nodes -L topology.kubernetes.io/zone,workload` — assert 3/3/3 + tainted loadgen. **Hard gate.** |
-| T-178 | `./scripts/deploy.sh` with `CASSANDRA_CR=.../k8ssandra-cluster-full.yaml` |
-| T-148 | Assert rack balance (2/2/2 at size 6); `kubectl get servicemonitor` non-empty; Grafana reachable |
+| T-178 | `./manifests/openshift/node-labels.sh` then `./scripts/deploy-openshift.sh` |
+| T-148 | Assert rack balance (1/1/1 at size 3); `kubectl get servicemonitor` non-empty; Grafana Route reachable |
 | T-143 | Verify MCP tools respond from Claude Code |
 | T-135 | `nosqlbench-prepare-job` — schema + bulk load |
-| T-117 | **Pre-flight Medusa backup** to prove IRSA, then delete it and purge the S3 prefix so the live one is a genuine first full backup |
+| T-117 | **Pre-flight Medusa backup** to prove the NooBaa path, then delete it so the live one is a genuine first full backup |
 | T-109 | **Pre-flight Reaper repair** to ~20%, then abort — proves registration and `reaper_db` migration |
 | T-103 | Start the main NoSQLBench job |
 | T-100 → T-40 | **Soak.** Throughput settles, driver pool warms, Grafana accumulates history. Touch nothing. |
 | T-40 | Confirm sustained ops/sec. If it's short of target, lower `cyclerate` now rather than demoing a miss |
-| T-25 | Port-forwards inside `while true` auto-restart loops — a dead tunnel mid-demo looks like a product failure |
+| T-25 | Open the Routes in browser tabs and confirm they load. No port-forwards to babysit on OpenShift — that is one fewer thing to fail live |
 | T-20 | Screenshot every live moment as a backup slide; Zoom share test at presentation font size |
 
-**The pre-warm rule:** anything that can fail *silently* (IRSA, Reaper schema
-migration, ServiceMonitor discovery, MCP connectivity) gets proven before the
+**The pre-warm rule:** anything that can fail *silently* (Medusa credentials, Reaper
+schema migration, ServiceMonitor discovery, MCP connectivity) gets proven before the
 audience arrives. Anything whose *duration is the point* (the backup upload, the
 repair progress bar, the 6→9 bootstrap) is done live. The backup and the repair each
 run twice — once quietly to prove the plumbing, once on camera.
