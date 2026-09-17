@@ -24,6 +24,15 @@ spec:
     datacenters:
       - metadata:
           name: dc1
+          annotations:
+            # storageConfig is IMMUTABLE on an existing CassandraDatacenter.
+            # Without this, changing the PVC size makes the validating webhook
+            # reject the ENTIRE CassandraDatacenter write - so every other
+            # config change in this CR silently stops being applied too. The
+            # symptom is a CR that stores your settings while the nodes keep
+            # running the old ones; check `kubectl get k8ssandracluster demo
+            # -o jsonpath='{.status.error}'`.
+            cassandra.datastax.com/allow-storage-changes: "true"
         # Deploy at 3 (one pod per node), scale to 6 live during the talk.
         #
         # Ring size must stay a multiple of 3 so the racks stay balanced.

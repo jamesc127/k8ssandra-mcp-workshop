@@ -42,6 +42,12 @@ spec:
             nodeAffinityLabels:
               topology.kubernetes.io/zone: us-east-1c
 
+        # storageConfig is IMMUTABLE on an existing CassandraDatacenter. If you
+        # ever need to resize these PVCs, add this annotation to the datacenter
+        # metadata above FIRST:
+        #   cassandra.datastax.com/allow-storage-changes: "true"
+        # Without it the validating webhook rejects the entire CassandraDatacenter
+        # write, which silently blocks every OTHER config change in this CR too.
         storageConfig:
           cassandraDataVolumeClaimSpec:
             storageClassName: ebs-gp3

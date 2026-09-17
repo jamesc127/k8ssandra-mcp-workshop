@@ -381,6 +381,58 @@ is what still holds the stale config.
 
 ---
 
+### Config changes in the CR never reach the nodes, with no visible error
+
+**Symptom:** you edit `spec.cassandra.datacenters[].config.cassandraYaml`, apply, and the
+K8ssandraCluster happily stores your change — but the nodes keep running the old value.
+`kubectl get k8ssandracluster demo -o jsonpath='{.spec...cassandraYaml}'` shows the new
+setting; the rendered `/etc/cassandra/cassandra.yaml` on the pod does not. No pod restarts,
+no obvious complaint.
+
+**This is easy to misdiagnose.** The natural conclusion is that something is filtering
+unknown keys. It is not: `cassandraYaml` is `unstructured.Unstructured` with
+`PreserveUnknownFields`, so arbitrary keys do pass through.
+
+**Real cause:** some *other* field in the same CR is immutable, the validating webhook
+rejects the **entire** CassandraDatacenter write, and every change in that apply is lost
+together. The one that bites here is storage:
+
+```
+admission webhook "vcassandradatacenter.kb.io" denied the request:
+CassandraDatacenter write rejected, attempted to change
+storageConfig.CassandraDataVolumeClaimSpec, diff: 50Gi -> 150Gi
+```
+
+**Always check the parent's status.error** — this is where webhook rejections surface, and
+it is the single most useful command when a CR change appears to do nothing:
+
+```bash
+kubectl get k8ssandracluster demo -n default -o jsonpath='{.status.error}'
+```
+
+Note the CassandraDatacenter itself will still report `Ready=True` and `Valid=True`, because
+the *existing* datacenter is perfectly healthy. Only the update was refused.
+
+**How you get into this state:** expanding PVCs directly with `kubectl patch pvc` (which is
+what you do to recover from a full disk) changes the real volumes but not the
+CassandraDatacenter. The CR and the datacenter then disagree, and every subsequent apply is
+rejected on that diff.
+
+**Fix:** allow the storage change explicitly, on the datacenter metadata:
+
+```yaml
+    datacenters:
+      - metadata:
+          name: dc1
+          annotations:
+            cassandra.datastax.com/allow-storage-changes: "true"
+```
+
+The related annotation `cassandra.datastax.com/autoupdate-spec` (`once` or `always`) forces
+StatefulSet spec updates when the CassandraDatacenter itself has not changed.
+
+---
+
 ### Cassandra container starts, then dies; readiness probe returns 500 forever
 
 **Symptom:** the pod reaches 2/3 Running, the management API answers liveness but returns

@@ -394,12 +394,13 @@ the table-level setting is silently meaningless without the YAML setting.
 | Soft anti-affinity that no-ops when every node has a Cassandra pod | Dedicated **tainted** loadgen node |
 | CFS throttling at the cgroup ceiling | **Deliberately left in place — see below** |
 
-### Do this one live, not as a war story
+### Two failures, and neither layer could see both
 
-The last two rows are the interesting ones, because on this cluster the skill is
-*still right* about both.
+During rehearsal this cluster produced a second failure that pairs with the first
+almost too neatly.
 
-**Throttling is happening right now.** Measured under the running load:
+**Failure 1 — Cassandra cannot see its own ceiling.** Throttling is happening right
+now. Measured under load:
 
 | | |
 |---|---|
@@ -408,30 +409,66 @@ The last two rows are the interesting ones, because on this cluster the skill is
 | CFS periods throttled | **0.10 – 0.22 %** |
 | Worker node CPU | 20 – 32 % |
 
-Pods pressed against the cgroup quota while the hosts idle — the same signature as
-the 6.0/6.0 run, just milder. So instead of recounting the old finding:
+`nodetool tpstats` is clean, thread-pool queues are shallow. From inside Cassandra
+nothing is wrong — the ceiling is a cgroup quota, visible only in cAdvisor, via a
+*second* Grafana datasource pointed at OpenShift's Thanos.
 
-1. Put the Grafana **"CFS throttling (% of periods)"** panel on screen. Non-zero.
-2. Next to it, **"Worker node CPU utilisation"**. Twenty-something percent.
-3. Then Cassandra's own **thread pool pending tasks**. Shallow.
-4. Ask Claude `/diagnose`. Three signals that each look fine alone, and only mean
-   something together — which is exactly the reasoning a skill encodes.
+**Failure 2 — Kubernetes cannot see a dead node.** The disks filled. Two of three
+nodes shut down. And:
+
+```
+$ kubectl get pods -l app.kubernetes.io/name=cassandra
+demo-dc1-rack1-sts-0   3/3   Running
+demo-dc1-rack2-sts-0   3/3   Running     <-- dead
+demo-dc1-rack3-sts-0   3/3   Running     <-- dead
+
+$ nodetool status
+UN  10.129.2.173  rack1
+DN  10.131.0.91   rack2
+DN  10.131.2.31   rack3
+```
+
+`commit_failure_policy: stop` halts CQL and gossip **but leaves the JVM running**.
+The container never exits, the pod never restarts, every Kubernetes signal says
+healthy. The node is simply gone from the ring.
+
+**That is the whole argument in one slide.** One failure invisible to Cassandra,
+one invisible to Kubernetes, each only diagnosable from the layer the other cannot
+reach. Neither `nodetool` alone nor `kubectl` alone gets you there.
+
+### Run it live
+
+1. Grafana **"CFS throttling (% of periods)"** — non-zero.
+2. **"Worker node CPU utilisation"** — twenty-something percent.
+3. Cassandra's **thread pool pending tasks** — shallow.
+4. Ask Claude `/diagnose`. Three signals that each look fine alone and only mean
+   something together, which is exactly the reasoning a skill encodes.
 5. Raise the limit live and watch panel 8 go to zero.
 
-**Why the panel exists at all is half the point.** That metric comes from cAdvisor,
-via a second Grafana datasource pointed at OpenShift's Thanos. It is invisible to
-`nodetool tpstats` and absent from every Cassandra-side dashboard. A cluster can be
-capped by its cgroup quota and look perfectly healthy from the inside.
+Then put `kubectl get pods` beside `nodetool status` from the rehearsal
+screenshots. The two-layer point lands in about fifteen seconds.
+
+### What got fixed because of it
+
+| Finding | Change |
+|---|---|
+| `commit_failure_policy: stop` hides a dead node on Kubernetes | **`die`** — the JVM exits, the container terminates, a persistent failure surfaces as CrashLoopBackOff |
+| `commitlog_sync_period: 10000ms` on network-attached storage | **2000ms** — the 10s default is for spinning disks |
+| PVCs sized from dataset size | **150Gi**, sized for write throughput x duration |
+| Nothing warned before the disk filled | Grafana panels 11-13, including **projected hours until full** |
+
+Both config fixes came out of the `cassandra-expert` references rather than from
+guessing — which is the point. The skill already knew `die` was correct for a
+supervised process; it took a live outage to make me go and look.
 
 **Be straight about the constraint.** The 14-core limit is sized for two pods per
-worker after the scale-up. At ring size 3 each pod owns a whole 31.5-core worker, so
-right now that quota costs throughput for nothing — and any throughput number quoted
+worker after the scale-up. At ring size 3 each pod owns a whole 31.5-core worker,
+so right now that quota costs throughput for nothing — and any throughput number
 from this cluster comes from a deliberately constrained one. Say so.
 
 **And `softPodAntiAffinity` is still on**, because three workers cannot host a
-six-node ring any other way. `/expert` calls it "defensible only for dev/CI/workshop,
-not for any RF=3 cluster where availability matters." It is right. This is a
-workshop cluster; in production you would add workers instead.
+six-node ring any other way. `/expert` calls it "defensible only for
+dev/CI/workshop, not for any RF=3 cluster where availability matters." It is right.
 
 That is a better ending than a clean sweep. A tool that tells you something
 inconvenient, which you then accept with your eyes open, is more useful than one
