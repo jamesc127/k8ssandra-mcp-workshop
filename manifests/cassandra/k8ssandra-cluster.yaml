@@ -42,6 +42,24 @@ spec:
             nodeAffinityLabels:
               topology.kubernetes.io/zone: us-east-1c
 
+
+        # The Vector log-tailer sidecar ships with a 128Mi limit and sits at
+        # 119-122Mi in steady state - no headroom at all. During a scale-under-load
+        # rehearsal it OOMKilled (exit 137) on multiple pods.
+        #
+        # Nothing was actually wrong with Cassandra: it stayed at ~9.9 GiB of its
+        # 32 GiB limit and never left the ring. But the POD reported 2/3 Ready, so
+        # anything watching pod readiness saw a degraded cluster that was fine.
+        # (That is the exact inverse of the disk-full failure, where the pod said
+        # 3/3 Running and Cassandra was dead. Neither direction is trustworthy on
+        # its own.)
+        containers:
+          - name: server-system-logger
+            resources:
+              requests:
+                memory: 128Mi
+              limits:
+                memory: 256Mi
         # storageConfig is IMMUTABLE on an existing CassandraDatacenter. If you
         # ever need to resize these PVCs, add this annotation to the datacenter
         # metadata above FIRST:

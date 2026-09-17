@@ -282,8 +282,41 @@ Material to fill the time:
 
 Come back at the end of Part 7 for `nodetool status` and the ownership shift.
 
-**Expected (re-measure at rehearsal):** rate held within 1%, zero NB errors, RF=3
-maintained throughout, ownership settling from 100% to ~50% per node.
+**MEASURED, 17 Sep rehearsal** — these are real numbers from this cluster, not
+estimates:
+
+| | |
+|---|---|
+| Patch to 6 nodes `UN` | **9 min 20 s** |
+| First new node joined | ~2 min |
+| Throughput | 55.5k - 60.1k against a 60k target |
+| Worst dip | **8%**, transient, recovered inside 25 s |
+| NoSQLBench errors | **0** |
+| Ownership | 100% -> 51.5% / 48.5% |
+
+The best visual is a `nodetool status` taken mid-scale, when the racks have not
+yet caught up with each other:
+
+```
+UN  10.129.2.174   11.11 GiB   owns 51.5%    rack1   original
+UN  10.131.0.93    11.09 GiB   owns 51.5%    rack2   original
+UN  10.131.2.38    11.05 GiB   owns 100.0%   rack3   original - not yet split
+UN  10.131.0.94     5.37 GiB   owns 48.5%    rack2   NEW, joined
+UN  10.129.2.175    1.71 GiB   owns 48.5%    rack1   NEW, still filling
+```
+
+One rack still at 100% while the others have already halved, and two new nodes
+at different fill levels. That single screen says more about what the operator is
+doing than any slide would.
+
+**A caveat worth saying out loud.** The scale succeeded and the load never saw an
+error — but the `server-system-logger` sidecar OOMKilled on several pods during
+it (128 MiB limit, 122 MiB steady state). Cassandra was untouched at ~9.9 GiB of
+its 32 GiB limit and never left the ring, yet those pods reported **2/3 Ready**.
+
+That is the exact inverse of the disk-full failure in Part 8, where the pod said
+3/3 Running and Cassandra was dead. Pod readiness was wrong in both directions,
+for opposite reasons. The limit is now 256 MiB.
 
 ---
 

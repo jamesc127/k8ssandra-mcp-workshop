@@ -175,20 +175,34 @@ data:
             stmt: |
               SELECT * FROM payments.transactions_by_id WHERE txn_id = {txn_id};
 
-          # Q4 - a new authorization. LOGGED batch because the three tables are
-          # denormalized views of one fact and must not drift. This is NOT a
-          # performance optimization - it costs a batchlog write - it is an
-          # eventual-consistency guarantee across tables.
-          authorize:
-            ratio: 15
-            # cqld4 cannot PREPARE a multi-statement BATCH - it fails with
-            # "Cache computation failed" out of getOrCreatePreparedStatement.
-            # Use the `simple:` op type (unprepared) rather than `stmt:` plus
-            # prepared:false, which nb5 rejects as an ambiguous op template.
-            # Worth naming on stage: you lose prepared-statement reuse on the
-            # write path, which is part of what a LOGGED batch costs you.
-            simple: |
-              BEGIN LOGGED BATCH
+          # Q4 - a new authorization, written to all three denormalized views.
+          #
+          # THREE SEPARATE INSERTS, NOT A BATCH. A LOGGED batch is the textbook
+          # answer for keeping denormalized views consistent, and it is what this
+          # workload used first. It does not work here:
+          #   - `BEGIN LOGGED BATCH` is rejected by Cassandra 5.0 outright
+          #     ("mismatched input 'LOGGED' expecting K_BATCH") - LOGGED is the
+          #     default and no longer an accepted keyword.
+          #   - cqld4 cannot PREPARE a multi-statement BATCH at all ("Cache
+          #     computation failed").
+          #   - Sent as an unprepared `simple:` op it renders without error and
+          #     then executes NOTHING. Verified in isolation: 990 cycles, zero
+          #     errors, zero writes.
+          #
+          # And with errors=count that failure is completely silent - the job
+          # runs at full rate, exits clean, and writes nothing. Reads looked
+          # perfect at 51k/sec the whole time. ALWAYS verify write traffic:
+          #   sum(rate(org_apache_cassandra_metrics_client_request_latency_count{request_type="Write"}[2m]))
+          #
+          # Three separate prepared writes are also closer to what real payment
+          # systems do - most write denormalized views from the application and
+          # accept eventual consistency rather than pay for a batchlog. The cost
+          # is now visible rather than hidden: one authorization is 3 writes, so
+          # RF=3 makes it 9 replica writes. That is the denormalization tax, and
+          # it is a better talking point than the batch was.
+          auth_by_card:
+            ratio: 5
+            stmt: |
               INSERT INTO payments.transactions_by_card
                 (card_id, bucket, txn_at, txn_id, merchant_id, merchant_name,
                  merchant_cat, amount_cents, currency, status, auth_code, country,
@@ -197,14 +211,21 @@ data:
                       {merchant_name},{merchant_cat},{amount_cents},{currency},
                       {status},{auth_code},{country},{pos_entry},{resp_code},
                       {risk_score},{terminal_id},{acquirer_id});
+
+          auth_by_id:
+            ratio: 5
+            stmt: |
               INSERT INTO payments.transactions_by_id
                 (txn_id, card_id, txn_at, merchant_id, merchant_name,
                  amount_cents, currency, status, resp_code, risk_score)
               VALUES ({txn_id},{card_id},{txn_at},{merchant_id},{merchant_name},
                       {amount_cents},{currency},{status},{resp_code},{risk_score});
+
+          auth_by_merchant:
+            ratio: 5
+            stmt: |
               INSERT INTO payments.transactions_by_merchant
                 (merchant_id, bucket, txn_at, txn_id, card_id, amount_cents,
                  currency, status, terminal_id, acquirer_id)
               VALUES ({merchant_id},{mrch_bucket},{txn_at},{txn_id},{card_id},
                       {amount_cents},{currency},{status},{terminal_id},{acquirer_id});
-              APPLY BATCH;
