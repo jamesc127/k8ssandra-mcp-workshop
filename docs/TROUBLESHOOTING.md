@@ -128,6 +128,66 @@ pod whose Cassandra has already died needs a restart to complete the filesystem 
 
 ---
 
+### Disk keeps growing and neither `nodetool status` nor `listsnapshots` explains it
+
+**Symptom:** the PVC is at 21% while `nodetool status` reports a Load of 7.6 GiB on a
+150Gi volume. Nodes added later sit at 5-8% with identical Load. Nothing in Cassandra's
+own output accounts for the difference.
+
+**Cause:** `auto_snapshot` defaults to **true**, and it fires on both `DROP` and
+`TRUNCATE`. The snapshot hard-links every sstable, so dropping a table frees nothing.
+Replacing the `baselines.keyvalue` workload with the payments model left **59 GiB across
+three nodes** under a `dropped-<timestamp>-keyvalue` tag — for a keyspace that no longer
+exists in the schema at all:
+
+```
+$ nodetool describering baselines
+error: No such keyspace: baselines
+```
+
+Only the three original nodes were affected. The nodes added a day later by the scale-out
+bootstrapped *after* the drop, streamed live data only, and have no snapshot — which is
+why the symptom looks like a scale-out artifact and is not one. **The split is by node
+age, not by ring position.**
+
+**The obvious check under-reports by 22 GiB.** `nodetool listsnapshots` prints the
+snapshot as a line item and then omits it from its own total:
+
+```
+dropped-1789592404299-keyvalue  baselines  keyvalue  22.54 GiB  22.54 GiB  2026-09-16T21:00:04Z
+...
+Total TrueDiskSpaceUsed: 457.76 KiB      <-- counts only the three tiny payments snapshots
+```
+
+The total cannot attribute a snapshot whose keyspace is gone from the schema, so it
+silently drops it. Between them, `nodetool status` Load (live data only) and
+`listsnapshots` (total excludes it) said 7.6 GiB while the PVC said 31.7 GiB. **Read the
+per-snapshot rows, never the total** — and note that the only view that told the truth
+here was the Kubernetes disk panel, which is the same reason panels 11-13 exist.
+
+**Fix — reclaim it.** The tag differs on every node, because each one snapshots
+independently at drop time:
+
+```bash
+for p in demo-dc1-rack1-sts-0 demo-dc1-rack2-sts-0 demo-dc1-rack3-sts-0; do
+  kubectl exec -n default $p -c cassandra -- nodetool listsnapshots   # record first
+  kubectl exec -n default $p -c cassandra -- nodetool clearsnapshot --all
+done
+```
+
+Safe to run under sustained load: 58 GiB was reclaimed across three nodes during a 60k
+ops/sec run with zero timeouts and zero failures, and all six nodes stayed UN.
+
+**Fix — stop it recurring.** All three CRs now set `auto_snapshot: false` in
+`cassandraYaml`. This is right for a workshop cluster that is torn down, rebuilt and
+reloaded repeatedly. **On a production cluster leave it `true`** — it is exactly what
+saves you from a mistaken `DROP` — and prune deliberately instead.
+
+Note this is a `cassandraYaml` change, so applying it to a live cluster triggers a
+rolling restart. It costs nothing to leave until the next rebuild.
+
+---
+
 ### Node restart-loops after a disk-full event: corrupt commitlog
 
 **Symptom:** after freeing space, one node will not start. cass-operator logs

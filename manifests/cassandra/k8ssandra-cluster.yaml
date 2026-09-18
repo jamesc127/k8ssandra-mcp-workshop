@@ -105,6 +105,30 @@ spec:
             # hot replica. 0.1 is the documented modern recommendation.
             dynamic_snitch_badness_threshold: 0.1
 
+            # auto_snapshot: the default is TRUE, and it fires on both DROP and
+            # TRUNCATE. The snapshot hard-links every sstable, so dropping a table
+            # frees NOTHING -- the data sits on disk forever under a
+            # `dropped-<timestamp>-<table>` tag.
+            #
+            # Measured here: replacing the `baselines.keyvalue` workload with the
+            # payments model left 59 GiB of snapshots across three nodes for a
+            # keyspace that no longer exists in the schema at all
+            # (`nodetool describering baselines` -> "No such keyspace").
+            #
+            # Worse, the obvious check lies. `nodetool listsnapshots` PRINTS the
+            # 22.54 GiB snapshot as a line item and then reports
+            # "Total TrueDiskSpaceUsed: 457.76 KiB" -- the total silently omits it,
+            # because the keyspace is gone from the schema and it cannot be
+            # attributed. `nodetool status` Load only ever counts live data. So the
+            # two Cassandra-native views said 7.6 GiB while the PVC said 31.7 GiB,
+            # and only the Kubernetes disk panel told the truth.
+            #
+            # This is a workshop cluster that gets torn down, rebuilt and reloaded
+            # repeatedly, so the safety net costs far more than it is worth. On a
+            # production cluster leave it TRUE -- it is the thing that saves you
+            # from a mistaken DROP -- and prune deliberately instead.
+            auto_snapshot: false
+
             # --- Durability settings, from cassandra-expert references ---
             #
             # commit_failure_policy: the operator default is `stop`, which halts
