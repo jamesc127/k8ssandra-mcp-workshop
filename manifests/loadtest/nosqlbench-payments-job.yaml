@@ -4,7 +4,11 @@
 #
 # MIX: 70% cardholder statement (range scan, LIMIT 20)
 #      15% transaction lookup by id (point read)
-#      15% authorization (LOGGED BATCH across all three tables)
+#      15% authorization, as THREE separate prepared inserts (5/5/5) - one per
+#         denormalized view. Not a LOGGED batch: Cassandra 5.0 rejects the
+#         `BEGIN LOGGED BATCH` keyword, cqld4 cannot prepare a multi-statement
+#         batch, and as an unprepared `simple:` op it silently writes nothing.
+#         See the long comment on auth_by_card in the workload ConfigMap.
 # i.e. 85/15 read/write, which is typical for card processing. The old keyvalue
 # workload was 50/50, which is really a write-saturation test - and is what
 # filled the disks during a rehearsal.
