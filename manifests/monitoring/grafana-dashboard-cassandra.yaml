@@ -1,25 +1,53 @@
 # Cassandra dashboard for Grafana, built against the metric names this cluster
 # actually emits.
 #
-# TWO DATASOURCES, on purpose:
-#   Panels 1-6   -> our kube-prometheus-stack (Cassandra's own metrics)
-#   Panels 7-13  -> OpenShift Thanos, uid "openshift-thanos" (cAdvisor, node, kubelet)
+# ORGANISED INTO SIX COLLAPSIBLE ROWS. Rows that should be on screen during the
+# talk are open; the reference rows are collapsed so the dashboard fits a
+# projector without scrolling:
 #
+#   [open]      Traffic & Latency        rate, latency, per-node reads, clients
+#   [open]      Errors, Drops & Hints    the row that PROVES a claim
+#   [collapsed] JVM & GC                 heap, GC time, pause duration, G1 pools
+#   [collapsed] Storage & Compaction     pending compactions, disk, partitions, cache
+#   [collapsed] Kubernetes Resources     pod CPU, CFS throttling, memory, node CPU
+#   [open]      Disk Capacity            the row that exists because of an outage
+#
+# TWO DATASOURCES, on purpose:
+#   Cassandra's own metrics  -> our kube-prometheus-stack, via "${datasource}"
+#   cAdvisor / node / kubelet -> OpenShift Thanos, uid "openshift-thanos"
 # Our stack does not scrape the kubelet, so container_cpu_* and
 # kubelet_volume_stats_* live only in the platform's monitoring.
 #
-# Panel 8 (CFS throttling) and panels 11-13 (disk) are the two things Cassandra
-# cannot tell you about itself:
+# THE JOB FILTER ON jvm_* IS LOAD-BEARING. Reaper exports jvm_gc_collection_seconds_*
+# and jvm_memory_bytes_* under exactly the same names. Without
+# job="demo-dc1-all-pods-service" the JVM row charts Reaper's 344MB heap instead
+# of Cassandra's 8GB one, and looks entirely plausible while doing it.
+#
+# WHY "Errors, Drops & Hints" IS AN OPEN ROW: during the scale-out and pod-kill
+# demos the claim is "zero failed requests". The errors panel is the evidence for
+# that claim, and the hints panel shows Cassandra repairing itself on screen as
+# the killed node rejoins and its backlog of hints is replayed.
+#
+# WHY THE CACHE PANEL IS DELIBERATELY FLAT ZERO: Cassandra 5.0 defaults to the
+# BTI sstable format, whose trie index is memory-mapped and bypasses the key
+# cache entirely. Every tuning guide that tells you to size key_cache_size is
+# describing 4.x. The panel is kept BECAUSE it is zero -- a metric that reads
+# zero for a known reason is worth more than one nobody ever charted.
+#
+# Two things Cassandra cannot tell you about itself, both in the Kubernetes rows:
 #   - a cgroup quota can cap throughput while tpstats looks perfectly healthy
 #   - a full disk trips commit_failure_policy=stop and the node shuts down while
 #     its pod stays 3/3 Running, so nothing in kubectl looks wrong either
-# Panels 11-13 were added after exactly that took two of three nodes down during
+# The disk row was added after exactly that took two of three nodes down during
 # a rehearsal: 50Gi PVCs, a 3-hour sustained write job, and 66 sstables that UCS
 # could not merge fast enough. Storage must be sized for write throughput x
 # duration, not for the logical dataset size.
 #
 # NOTE: kubelet_volume_stats_* returns DUPLICATE series through Thanos, so every
 # disk query wraps in max by (persistentvolumeclaim) to dedupe.
+#
+# The dropped-messages query filters to > 0 on purpose: all 87 message types are
+# exported per node (522 series on a 6-node ring) and the zeros drown the signal.
 #
 # DO NOT replace this with a community k8ssandra dashboard. Those target the
 # deprecated MCAC endpoint (collectd_mcac_*). Cassandra 5 exposes
@@ -69,6 +97,20 @@ data:
       },
       "panels": [
         {
+          "id": 101,
+          "title": "Traffic & Latency",
+          "description": "What the cluster is actually serving, as Cassandra sees it.",
+          "type": "row",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
           "id": 1,
           "title": "Client request rate by type",
           "description": "Throughput as Cassandra sees it, not as the load generator reports it.",
@@ -79,7 +121,7 @@ data:
           },
           "gridPos": {
             "x": 0,
-            "y": 0,
+            "y": 1,
             "w": 12,
             "h": 8
           },
@@ -134,7 +176,7 @@ data:
           },
           "gridPos": {
             "x": 12,
-            "y": 0,
+            "y": 1,
             "w": 12,
             "h": 8
           },
@@ -198,7 +240,7 @@ data:
           },
           "gridPos": {
             "x": 0,
-            "y": 8,
+            "y": 9,
             "w": 12,
             "h": 8
           },
@@ -243,9 +285,9 @@ data:
           }
         },
         {
-          "id": 4,
-          "title": "Pending compactions per node",
-          "description": "Sustained growth means compaction is losing to the write rate - which is what precedes the disk filling up.",
+          "id": 14,
+          "title": "Connected native clients",
+          "description": "Driver connections per node. The load generator's pool should spread evenly; a node with none is not taking traffic, whatever nodetool status says.",
           "type": "timeseries",
           "datasource": {
             "type": "prometheus",
@@ -253,7 +295,7 @@ data:
           },
           "gridPos": {
             "x": 12,
-            "y": 8,
+            "y": 9,
             "w": 12,
             "h": 8
           },
@@ -263,7 +305,7 @@ data:
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "sum by (pod) (org_apache_cassandra_metrics_compaction_pending_tasks)",
+              "expr": "sum by (pod) (org_apache_cassandra_metrics_client_connected_native_clients)",
               "legendFormat": "{{pod}}",
               "refId": "A"
             }
@@ -298,9 +340,23 @@ data:
           }
         },
         {
-          "id": 5,
-          "title": "Live disk space used per node (Cassandra's view)",
-          "description": "LIVE sstables only. This UNDER-reports actual disk use - it misses commitlog, snapshots and sstables pending deletion. Use panel 11 for the truth.",
+          "id": 102,
+          "title": "Errors, Drops & Hints",
+          "description": "The row that proves a claim. Everything here should be flat zero on a healthy cluster -- which is exactly why it is worth screen space during a failure demo.",
+          "type": "row",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 17,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "id": 15,
+          "title": "Client request errors  [SHOULD BE FLAT ZERO]",
+          "description": "Timeouts, unavailables and failures. This is the panel that answers \"how do you know the scale-out and the pod kill cost nothing?\" -- a flat zero line here IS the evidence. Unavailables mean fewer replicas were up than the consistency level needed; timeouts mean replicas were up but too slow.",
           "type": "timeseries",
           "datasource": {
             "type": "prometheus",
@@ -308,7 +364,7 @@ data:
           },
           "gridPos": {
             "x": 0,
-            "y": 16,
+            "y": 18,
             "w": 12,
             "h": 8
           },
@@ -318,14 +374,32 @@ data:
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "sum by (pod) (org_apache_cassandra_metrics_table_live_disk_space_used)",
-              "legendFormat": "{{pod}}",
+              "expr": "sum(rate(org_apache_cassandra_metrics_client_request_timeouts_total{request_type=~\"Read|Write\"}[1m]))",
+              "legendFormat": "Timeouts",
               "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(rate(org_apache_cassandra_metrics_client_request_unavailables_total{request_type=~\"Read|Write\"}[1m]))",
+              "legendFormat": "Unavailables",
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(rate(org_apache_cassandra_metrics_client_request_failures_total{request_type=~\"Read|Write\"}[1m]))",
+              "legendFormat": "Failures",
+              "refId": "C"
             }
           ],
           "fieldConfig": {
             "defaults": {
-              "unit": "bytes",
+              "unit": "ops",
               "min": 0,
               "custom": {
                 "lineWidth": 2,
@@ -353,6 +427,179 @@ data:
           }
         },
         {
+          "id": 16,
+          "title": "Dropped messages by type",
+          "description": "Cassandra sheds internode messages it cannot service within their timeout rather than queueing forever. MUTATION drops mean writes were silently lost and only repair will fix them. Filtered to > 0 because all 87 message types are exported per node and the zeros drown everything out.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 18,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (message_type) (rate(org_apache_cassandra_metrics_dropped_message_dropped_total[1m])) > 0",
+              "legendFormat": "{{message_type}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 17,
+          "title": "Hinted handoff",
+          "description": "When a replica is down, the coordinator stores a hint and replays it on rejoin. This is the panel that lights up during the pod-kill demo: Created/s climbs while the node is gone, then Delivered/s spikes as it comes back. It is Cassandra repairing itself in real time, on screen. Uses storage_total_hints rather than hints_service_hints_created_<ip>, which bakes the peer address into the METRIC NAME -- eleven separate metrics that rate() cannot aggregate, because stripping __name__ leaves eleven identical label sets and Prometheus refuses the query.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 26,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(rate(org_apache_cassandra_metrics_storage_total_hints[1m]))",
+              "legendFormat": "Created/s",
+              "refId": "A"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(rate(org_apache_cassandra_metrics_hints_service_hints_succeeded_total[1m]))",
+              "legendFormat": "Delivered/s",
+              "refId": "B"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(rate(org_apache_cassandra_metrics_hints_service_hints_failed_total[1m]))",
+              "legendFormat": "Failed/s",
+              "refId": "C"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(rate(org_apache_cassandra_metrics_hints_service_hints_timed_out_total[1m]))",
+              "legendFormat": "Timed out/s",
+              "refId": "D"
+            },
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum(org_apache_cassandra_metrics_storage_total_hints_in_progress)",
+              "legendFormat": "In flight (count)",
+              "refId": "E"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "min": 0,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "In flight (count)"
+                },
+                "properties": [
+                  {
+                    "id": "custom.axisPlacement",
+                    "value": "right"
+                  },
+                  {
+                    "id": "unit",
+                    "value": "short"
+                  },
+                  {
+                    "id": "custom.lineStyle",
+                    "value": {
+                      "fill": "dash",
+                      "dash": [
+                        10,
+                        10
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
           "id": 6,
           "title": "Thread pool pending tasks",
           "description": "Zero pending while throughput is capped means the bottleneck is OUTSIDE Cassandra.",
@@ -363,7 +610,7 @@ data:
           },
           "gridPos": {
             "x": 12,
-            "y": 16,
+            "y": 26,
             "w": 12,
             "h": 8
           },
@@ -408,233 +655,779 @@ data:
           }
         },
         {
-          "id": 7,
-          "title": "Cassandra pod CPU vs limit",
-          "description": "Lines converging on the limit are about to be throttled. Cassandra cannot see this.",
-          "type": "timeseries",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openshift-thanos"
-          },
+          "id": 103,
+          "title": "JVM & GC",
+          "description": "Cassandra is a JVM application. Container memory graphs cannot show heap pressure, and GC pauses are the most common cause of latency spikes.",
+          "type": "row",
+          "collapsed": true,
           "gridPos": {
             "x": 0,
-            "y": 24,
-            "w": 12,
-            "h": 8
+            "y": 34,
+            "w": 24,
+            "h": 1
           },
-          "targets": [
+          "panels": [
             {
+              "id": 18,
+              "title": "JVM heap used vs max",
+              "description": "Panel 11 shows CONTAINER memory, which is heap + off-heap + page cache and cannot show heap pressure. This can. Note the job filter: Reaper exports jvm_* under the same names, so without it you are charting Reaper's heap.",
+              "type": "timeseries",
               "datasource": {
                 "type": "prometheus",
-                "uid": "openshift-thanos"
+                "uid": "${datasource}"
               },
-              "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"}[2m]))",
-              "legendFormat": "{{pod}}",
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "openshift-thanos"
+              "gridPos": {
+                "x": 0,
+                "y": 35,
+                "w": 12,
+                "h": 8
               },
-              "expr": "min(kube_pod_container_resource_limits{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\",resource=\"cpu\"})",
-              "legendFormat": "limit",
-              "refId": "B"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "none",
-              "min": 0,
-              "custom": {
-                "lineWidth": 2,
-                "fillOpacity": 10,
-                "stacking": {
-                  "mode": "none"
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "sum by (pod) (jvm_memory_bytes_used{job=\"demo-dc1-all-pods-service\",area=\"heap\"})",
+                  "legendFormat": "{{pod}}",
+                  "refId": "A"
+                },
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "max(jvm_memory_bytes_max{job=\"demo-dc1-all-pods-service\",area=\"heap\"})",
+                  "legendFormat": "Xmx",
+                  "refId": "B"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "bytes",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
                 }
               }
             },
-            "overrides": []
-          },
-          "options": {
-            "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull",
-                "max"
-              ]
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
-            }
-          }
-        },
-        {
-          "id": 8,
-          "title": "CFS throttling (% of periods)",
-          "description": "THE metric behind the CFS-throttling finding. Invisible to nodetool tpstats. Non-zero here with idle hosts and empty thread-pool queues means the cgroup quota is the ceiling, not Cassandra.",
-          "type": "timeseries",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openshift-thanos"
-          },
-          "gridPos": {
-            "x": 12,
-            "y": 24,
-            "w": 12,
-            "h": 8
-          },
-          "targets": [
             {
+              "id": 19,
+              "title": "GC time as % of wall clock",
+              "description": "Seconds of GC per second of elapsed time. Both DataStax and Instaclustr call GC pauses the single most common cause of Cassandra latency spikes. Sustained G1 Old Generation above zero means the collector is losing; correlate any p99 spike on panel 2 with this before blaming disk.",
+              "type": "timeseries",
               "datasource": {
                 "type": "prometheus",
-                "uid": "openshift-thanos"
+                "uid": "${datasource}"
               },
-              "expr": "sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"}[5m])) / sum by (pod) (rate(container_cpu_cfs_periods_total{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"}[5m])) * 100",
-              "legendFormat": "{{pod}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "percent",
-              "min": 0,
-              "custom": {
-                "lineWidth": 2,
-                "fillOpacity": 10,
-                "stacking": {
-                  "mode": "none"
+              "gridPos": {
+                "x": 12,
+                "y": 35,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "sum by (pod, gc) (rate(jvm_gc_collection_seconds_sum{job=\"demo-dc1-all-pods-service\"}[5m]))",
+                  "legendFormat": "{{pod}} / {{gc}}",
+                  "refId": "A"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "percentunit",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
                 }
               }
             },
-            "overrides": []
-          },
-          "options": {
-            "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull",
-                "max"
-              ]
+            {
+              "id": 20,
+              "title": "Average GC pause duration",
+              "description": "rate(sum)/rate(count) -- mean stop-the-world pause per collection. G1's target is 500ms by default; young-gen pauses of tens of milliseconds are healthy. Any Old Generation pause at all is worth investigating.",
+              "type": "timeseries",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "gridPos": {
+                "x": 0,
+                "y": 43,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "sum by (gc) (rate(jvm_gc_collection_seconds_sum{job=\"demo-dc1-all-pods-service\"}[5m])) / clamp_min(sum by (gc) (rate(jvm_gc_collection_seconds_count{job=\"demo-dc1-all-pods-service\"}[5m])), 0.0001)",
+                  "legendFormat": "{{gc}} avg pause",
+                  "refId": "A"
+                },
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "sum by (gc) (rate(jvm_gc_collection_seconds_count{job=\"demo-dc1-all-pods-service\"}[5m]))",
+                  "legendFormat": "{{gc}} collections/s",
+                  "refId": "B"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "s",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              }
             },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
+            {
+              "id": 21,
+              "title": "G1 heap pools",
+              "description": "Eden fills and drains on every young collection -- that sawtooth is normal and healthy. Old Gen climbing without ever falling back is the shape that precedes an OOM.",
+              "type": "timeseries",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "gridPos": {
+                "x": 12,
+                "y": 43,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "sum by (pool) (jvm_memory_pool_bytes_used{job=\"demo-dc1-all-pods-service\",pool=~\"G1.*\"})",
+                  "legendFormat": "{{pool}}",
+                  "refId": "A"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "bytes",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "normal"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              }
             }
-          }
+          ]
         },
         {
-          "id": 9,
-          "title": "Cassandra pod memory (working set)",
-          "description": "",
-          "type": "timeseries",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openshift-thanos"
-          },
+          "id": 104,
+          "title": "Storage & Compaction",
+          "description": "How the data is laid out on disk, and whether compaction is keeping up.",
+          "type": "row",
+          "collapsed": true,
           "gridPos": {
             "x": 0,
-            "y": 32,
-            "w": 12,
-            "h": 8
+            "y": 51,
+            "w": 24,
+            "h": 1
           },
-          "targets": [
+          "panels": [
             {
+              "id": 4,
+              "title": "Pending compactions per node",
+              "description": "Sustained growth means compaction is losing to the write rate - which is what precedes the disk filling up.",
+              "type": "timeseries",
               "datasource": {
                 "type": "prometheus",
-                "uid": "openshift-thanos"
+                "uid": "${datasource}"
               },
-              "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"})",
-              "legendFormat": "{{pod}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "bytes",
-              "min": 0,
-              "custom": {
-                "lineWidth": 2,
-                "fillOpacity": 10,
-                "stacking": {
-                  "mode": "none"
+              "gridPos": {
+                "x": 0,
+                "y": 52,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "sum by (pod) (org_apache_cassandra_metrics_compaction_pending_tasks)",
+                  "legendFormat": "{{pod}}",
+                  "refId": "A"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "short",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
                 }
               }
             },
-            "overrides": []
-          },
-          "options": {
-            "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull",
-                "max"
-              ]
+            {
+              "id": 5,
+              "title": "Live disk space used per node (Cassandra's view)",
+              "description": "LIVE sstables only. This UNDER-reports actual disk use - it misses commitlog, snapshots and sstables pending deletion. Use panel 11 for the truth.",
+              "type": "timeseries",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "gridPos": {
+                "x": 12,
+                "y": 52,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "sum by (pod) (org_apache_cassandra_metrics_table_live_disk_space_used)",
+                  "legendFormat": "{{pod}}",
+                  "refId": "A"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "bytes",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              }
             },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
+            {
+              "id": 22,
+              "title": "Largest partition per node",
+              "description": "Jon Haddad's guidance is to stay under 10MB per partition; over 100MB is a serious problem. The payments model buckets by hour precisely so this line stays flat instead of growing without bound. A partition that only grows is a data model bug that no amount of tuning will fix.",
+              "type": "timeseries",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "gridPos": {
+                "x": 0,
+                "y": 60,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "max by (pod) (org_apache_cassandra_metrics_table_max_partition_size_all)",
+                  "legendFormat": "{{pod}}",
+                  "refId": "A"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "bytes",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    },
+                    "thresholdsStyle": {
+                      "mode": "line"
+                    }
+                  },
+                  "thresholds": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": null
+                      },
+                      {
+                        "color": "orange",
+                        "value": 10485760
+                      },
+                      {
+                        "color": "red",
+                        "value": 104857600
+                      }
+                    ]
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              }
+            },
+            {
+              "id": 23,
+              "title": "Cache hit rate  [ZERO ON PURPOSE -- SEE DESCRIPTION]",
+              "description": "Every community Cassandra dashboard has this panel and every Cassandra tuning guide tells you to size the key cache. On this cluster it is a flat zero, and that is CORRECT. Cassandra 5.0 defaults to the BTI sstable format, whose trie index is memory-mapped and bypasses the key cache entirely -- 'for any sstables in the new format, the key cache will not be used and all index summary settings will be ignored'. The 200MiB key_cache_size this cluster was originally given was 200MiB of heap reserved for nothing. Kept as a panel because a metric that is zero for a KNOWN reason is worth more than one you never looked at.",
+              "type": "timeseries",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "gridPos": {
+                "x": 12,
+                "y": 60,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "sum by (cache) (rate(org_apache_cassandra_metrics_cache_hits_total[5m]))",
+                  "legendFormat": "{{cache}} hits/s",
+                  "refId": "A"
+                },
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "${datasource}"
+                  },
+                  "expr": "sum by (cache) (rate(org_apache_cassandra_metrics_cache_requests_total[5m]))",
+                  "legendFormat": "{{cache}} requests/s",
+                  "refId": "B"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "ops",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              }
             }
-          }
+          ]
         },
         {
-          "id": 10,
-          "title": "Worker node CPU utilisation",
-          "description": "Hosts idling while pods are throttled is the giveaway.",
-          "type": "timeseries",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "openshift-thanos"
-          },
+          "id": 105,
+          "title": "Kubernetes Resources",
+          "description": "What the platform is doing to the pods -- the half of the picture Cassandra has no visibility into.",
+          "type": "row",
+          "collapsed": true,
           "gridPos": {
-            "x": 12,
-            "y": 32,
-            "w": 12,
-            "h": 8
+            "x": 0,
+            "y": 68,
+            "w": 24,
+            "h": 1
           },
-          "targets": [
+          "panels": [
             {
+              "id": 7,
+              "title": "Cassandra pod CPU vs limit",
+              "description": "Lines converging on the limit are about to be throttled. Cassandra cannot see this.",
+              "type": "timeseries",
               "datasource": {
                 "type": "prometheus",
                 "uid": "openshift-thanos"
               },
-              "expr": "(1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) * 100",
-              "legendFormat": "{{instance}}",
-              "refId": "A"
-            }
-          ],
-          "fieldConfig": {
-            "defaults": {
-              "unit": "percent",
-              "min": 0,
-              "custom": {
-                "lineWidth": 2,
-                "fillOpacity": 10,
-                "stacking": {
-                  "mode": "none"
+              "gridPos": {
+                "x": 0,
+                "y": 69,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "openshift-thanos"
+                  },
+                  "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"}[2m]))",
+                  "legendFormat": "{{pod}}",
+                  "refId": "A"
+                },
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "openshift-thanos"
+                  },
+                  "expr": "min(kube_pod_container_resource_limits{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\",resource=\"cpu\"})",
+                  "legendFormat": "limit",
+                  "refId": "B"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "none",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
                 }
               }
             },
-            "overrides": []
-          },
-          "options": {
-            "legend": {
-              "displayMode": "table",
-              "placement": "bottom",
-              "calcs": [
-                "lastNotNull",
-                "max"
-              ]
+            {
+              "id": 8,
+              "title": "CFS throttling (% of periods)",
+              "description": "THE metric behind the CFS-throttling finding. Invisible to nodetool tpstats. Non-zero here with idle hosts and empty thread-pool queues means the cgroup quota is the ceiling, not Cassandra.",
+              "type": "timeseries",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "gridPos": {
+                "x": 12,
+                "y": 69,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "openshift-thanos"
+                  },
+                  "expr": "sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"}[5m])) / sum by (pod) (rate(container_cpu_cfs_periods_total{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"}[5m])) * 100",
+                  "legendFormat": "{{pod}}",
+                  "refId": "A"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "percent",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              }
             },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "desc"
+            {
+              "id": 9,
+              "title": "Cassandra pod memory (working set)",
+              "description": "",
+              "type": "timeseries",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "gridPos": {
+                "x": 0,
+                "y": 77,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "openshift-thanos"
+                  },
+                  "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"default\",pod=~\"demo-dc1-.*\",container=\"cassandra\"})",
+                  "legendFormat": "{{pod}}",
+                  "refId": "A"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "bytes",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              }
+            },
+            {
+              "id": 10,
+              "title": "Worker node CPU utilisation",
+              "description": "Hosts idling while pods are throttled is the giveaway.",
+              "type": "timeseries",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "openshift-thanos"
+              },
+              "gridPos": {
+                "x": 12,
+                "y": 77,
+                "w": 12,
+                "h": 8
+              },
+              "targets": [
+                {
+                  "datasource": {
+                    "type": "prometheus",
+                    "uid": "openshift-thanos"
+                  },
+                  "expr": "(1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]))) * 100",
+                  "legendFormat": "{{instance}}",
+                  "refId": "A"
+                }
+              ],
+              "fieldConfig": {
+                "defaults": {
+                  "unit": "percent",
+                  "min": 0,
+                  "custom": {
+                    "lineWidth": 2,
+                    "fillOpacity": 10,
+                    "stacking": {
+                      "mode": "none"
+                    }
+                  }
+                },
+                "overrides": []
+              },
+              "options": {
+                "legend": {
+                  "displayMode": "table",
+                  "placement": "bottom",
+                  "calcs": [
+                    "lastNotNull",
+                    "max"
+                  ]
+                },
+                "tooltip": {
+                  "mode": "multi",
+                  "sort": "desc"
+                }
+              }
             }
-          }
+          ]
+        },
+        {
+          "id": 106,
+          "title": "Disk Capacity  [WATCH THIS]",
+          "description": "A full disk trips commit_failure_policy and the node shuts down while its pod stays 3/3 Running. This row exists because that took two of three nodes down.",
+          "type": "row",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 85,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
         },
         {
           "id": 11,
@@ -647,8 +1440,8 @@ data:
           },
           "gridPos": {
             "x": 0,
-            "y": 40,
-            "w": 8,
+            "y": 86,
+            "w": 12,
             "h": 8
           },
           "targets": [
@@ -722,9 +1515,9 @@ data:
             "uid": "openshift-thanos"
           },
           "gridPos": {
-            "x": 8,
-            "y": 40,
-            "w": 8,
+            "x": 12,
+            "y": 86,
+            "w": 12,
             "h": 8
           },
           "targets": [
@@ -797,9 +1590,9 @@ data:
             "uid": "openshift-thanos"
           },
           "gridPos": {
-            "x": 16,
-            "y": 40,
-            "w": 8,
+            "x": 0,
+            "y": 94,
+            "w": 12,
             "h": 8
           },
           "targets": [
