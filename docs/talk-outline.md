@@ -9,6 +9,23 @@
 
 **Style:** Heavy live demo — Claude Code open on screen throughout Parts 5-8.
 
+> **Everything on this outline is driven from Claude Code in natural language.** There is
+> no terminal typing in this talk. Claude is connected to two things at once: the
+> **OpenShift cluster** (kubectl/oc, for pods, nodes, CRDs, scaling, killing things) and
+> the **easy-cass-mcp server** (for anything Cassandra-internal — `nodetool`-equivalents,
+> `system_views.*`, schema). Every command block below is written as **the prompt to
+> type**, not the command to run.
+>
+> Three presenter notes about working this way live:
+> - **Say what you asked for out loud** before you hit enter. The audience reads the
+>   prompt; you narrate the intent.
+> - **Let them watch the tool calls.** The interesting part is often *which* tool Claude
+>   reaches for — MCP for ring state, kubectl for pod state. That split is Part 7's whole
+>   argument, made visible for free.
+> - **Have the fallback command in your notes.** If Claude picks a wrong approach on
+>   stage, you correct it in one sentence and move on — that is a better demo than a
+>   flawless one, but only if you know the answer.
+
 > **Platform:** this runs on **OpenShift 4.19 on IBM Cloud** (the EKS request was declined).
 > Three platform differences change what is on screen, and each is worth naming rather than
 > hiding — they are all good teaching moments:
@@ -17,6 +34,33 @@
 > - **Everything is exposed by Route**, not a load balancer. The MCP endpoint is real https.
 >
 > The ring is 3 nodes scaling to 6, not 6 to 9 — the cluster has three Cassandra workers.
+
+## Live endpoints
+
+All three are OpenShift Routes with **edge TLS**, so they are real `https://` — no
+port-forward, no `--allow-http`, nothing to babysit. Have all three open in tabs and
+logged in before you go live.
+
+| What | URL |
+|---|---|
+| **Grafana** | https://grafana-monitoring.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com |
+| **Reaper** | https://reaper-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com |
+| **easy-cass-mcp** | https://easy-cass-mcp-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com/mcp/ |
+| **OpenShift console** | https://console-openshift-console.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com |
+
+Notes that will save you on the day:
+
+- **The MCP URL needs the trailing `/mcp/`.** For Claude Desktop the bridge is
+  `npx mcp-remote https://easy-cass-mcp-default.../mcp/` with **no** `--allow-http` —
+  the Route terminates TLS. That flag is an EKS-only leftover and it will break this.
+- **Prometheus has no Route** — it is ClusterIP only
+  (`kps-kube-prometheus-stack-prometheus.monitoring:9090`). Everything metrics-facing
+  goes through Grafana. That is *why* the Grafana MCP server is the right tool here:
+  it proxies PromQL through Grafana's datasource API, so Prometheus never needs
+  exposing and there is no port-forward to babysit.
+- **These hostnames contain the TechZone cluster id `itz-ckzpiv`.** Rebuild or get
+  reassigned a different cluster and every URL here changes. Re-derive them with
+  _"list the Routes and give me their hostnames"_ rather than trusting this table.
 
 > The event was sold on *"a clear introduction to k8ssandra, what it is, why it
 > matters, and how it fits into modern Cassandra operations."* Parts 4 and 5 are
@@ -39,9 +83,10 @@
 | 8 | Skills: Cassandra expertise as markdown | 8 | 57 |
 | 9 | Closing — the stack of the future | 3 | 60 |
 
-**Pre-show state (see README step 6 and the runbook at the end):** ring at `size: 6`,
-dataset preloaded, NoSQLBench running for ~60 min so throughput has settled, Grafana
-and Reaper tabs open and logged in, MCP verified from Claude Code.
+**Pre-show state (see README step 6 and the runbook at the end):** ring at **`size: 3`**
+— Part 6 scales it to 6 live, so it must start at 3 — dataset preloaded, NoSQLBench
+running for ~60 min so throughput has settled, Grafana and Reaper tabs open and logged
+in, both MCP servers verified from Claude Code.
 
 ---
 
@@ -49,9 +94,8 @@ and Reaper tabs open and logged in, MCP verified from Claude Code.
 
 Open on a terminal, not a slide.
 
-```bash
-kubectl get pods -n default -o wide
-```
+> **Ask Claude:** _"Show me every pod in the default namespace, with the node each one
+> landed on. Group them by what they actually are."_
 
 Point at what is on screen, in this order:
 - **3 Cassandra pods**, named `demo-dc1-rack1-sts-0`, `rack2`, `rack3` — three racks
@@ -60,16 +104,16 @@ Point at what is on screen, in this order:
 - **easy-cass-mcp**
 - Over in `monitoring`: **Prometheus and Grafana**
 
-```bash
-kubectl get nodes -L workload,k8ssandra.io/rack
-```
+> **Ask Claude:** _"List the worker nodes with their `workload` and `k8ssandra.io/rack`
+> labels, and tell me which ones are tainted and with what."_
 
 - Three workers labelled `rack1`, `rack2`, `rack3`
 - One node tainted `workload=loadgen` — nothing but the load generator runs there
 - One `utility` node carrying Prometheus, Grafana, Reaper and the operators
 
 Then switch to the Grafana tab, already showing an hour of history at
-«MEASURE AT REHEARSAL» ops/sec.
+**~60,000 ops/sec** (measured 21 Sep: 50,997 read + 9,000 write = 59,997, an 85/15 mix
+against a 60k target).
 
 > _"Everything you're about to see is live. It's been running for an hour, it's
 > under load right now, and I'm not going to stop it for the rest of the talk."_
@@ -154,12 +198,17 @@ field. It is not deployed in this workshop.
 ### 4c. The CRD map, live (~3 min)
 
 Show `docs/architecture-diagrams-openshift.md` on screen — §2 for the workload
-layout and §4 for the CRD ownership map — then go to the terminal:
+layout and §4 for the CRD ownership map — then ask Claude to do the same thing against
+the live cluster:
 
-```bash
-kubectl get crds | grep -E 'k8ssandra|cassandra\.datastax'
-kubectl explain k8ssandracluster.spec
-```
+> **Ask Claude:** _"Which K8ssandra and cass-operator CRDs are installed on this cluster?
+> Group them by API group, and mark which ones actually have instances right now."_
+
+That second half is the line worth asking for — "installed" and "instantiated" are
+different claims, and this is the one slide where you can show both at once.
+
+> **Ask Claude:** _"Now walk me through the top-level fields of the K8ssandraCluster spec,
+> and show me which of them our `demo` CR actually sets."_
 
 Point out the CRD *groups* — `k8ssandra.io`, `cassandra.datastax.com`,
 `medusa.k8ssandra.io`, `reaper.k8ssandra.io`, `control.k8ssandra.io` — and that
@@ -194,15 +243,14 @@ deployed none of them.**
 
 ### 5a. Monitoring (~4 min)
 
-```bash
-kubectl get servicemonitor -n default
-```
+> **Ask Claude:** _"Is there a ServiceMonitor in the default namespace? Show me what owns
+> it, which endpoint it scrapes, and the four lines of the CR that caused it to exist."_
 
 - The operator wrote that, from **four lines** of `telemetry:` in the CR
 - No JMX exporter sidecar, no scrape config, no relabeling rules
 
-Switch to Grafana: throughput, p99 read and write latency, pending compactions,
-per-pod CPU, disk used per pod.
+Switch to [Grafana](https://grafana-monitoring.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com):
+throughput, p99 read and write latency, pending compactions, per-pod CPU, disk used per pod.
 
 - **Gotcha worth 20 seconds on screen:** every published k8ssandra Grafana dashboard
   targets the deprecated MCAC endpoint (`collectd_mcac_*`). Cassandra 5 exposes
@@ -211,22 +259,25 @@ per-pod CPU, disk used per pod.
 
 ### 5b. Reaper (~4 min)
 
-Port-forward is already up; go to the tab.
+The [Reaper Route](https://reaper-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com)
+is already open in a tab — go to it. (No port-forward to babysit on OpenShift; that is
+one fewer thing to fail live.)
 
 - The cluster **registered itself** — nothing was configured
 - **Why repairs exist**, briefly and concretely: replicas drift because writes
   fail, hints expire, and nodes miss mutations while down. If a deleted row isn't
   repaired before `gc_grace_seconds`, the tombstone is collected and the row comes
   back from a replica that never heard about the delete. That's zombie data.
-- **Trigger a full repair on `payments` live.** Watch segments tick up.
+- **Trigger a full repair on `payments` live** from the Reaper UI. Watch segments tick up.
+  If you would rather stay in Claude Code, ask instead: _"Has Reaper registered this
+  cluster? Show me its current repair runs and the segment progress on each."_
 - Leave it running — come back to it in Part 8.
 
 ### 5c. Medusa (~4 min)
 
-```bash
-kubectl apply -f manifests/cassandra/medusa-backup-job.yaml
-kubectl get medusabackupjob -n default -w
-```
+> **Ask Claude:** _"Start a full Medusa backup from
+> `manifests/cassandra/medusa-backup-job.yaml`, then keep an eye on the MedusaBackupJob
+> and tell me as each node finishes."_
 
 Talk while it uploads (~«MEASURE AT REHEARSAL»):
 - **The bucket is in-cluster.** NooBaa — OpenShift Data Foundation's S3 gateway —
@@ -238,10 +289,8 @@ Talk while it uploads (~«MEASURE AT REHEARSAL»):
 
 Then the payoff:
 
-```bash
-kubectl get medusabackup -n default
-kubectl get objectbucketclaim medusa-backups -n default
-```
+> **Ask Claude:** _"Show me the finished MedusaBackup objects with the per-node sizes, and
+> confirm which bucket the ObjectBucketClaim handed Medusa."_
 
 Per-node backup sizes, in object storage that did not exist ten minutes ago.
 
@@ -252,10 +301,18 @@ Per-node backup sizes, in object storage that did not exist ten minutes ago.
 If you take one thing from this session: **scaling Apache Cassandra under load is
 no longer an event.**
 
-```bash
-kubectl patch k8ssandracluster demo -n default --type=json \
-  -p='[{"op":"replace","path":"/spec/cassandra/datacenters/0/size","value":6}]'
-```
+> **Ask Claude:** _"Scale the `demo` K8ssandraCluster from 3 nodes to 6."_
+
+**Watch which patch it chooses** — this is worth ten seconds of narration. A
+strategic-merge patch replaces the whole datacenter array and gets rejected with
+"storageConfig must be defined"; the edit has to be a JSON patch targeting
+`/spec/cassandra/datacenters/0/size`. It is a genuinely non-obvious Kubernetes trap, and
+watching it get picked correctly is more convincing than asserting it on a slide.
+
+Then hand Claude the job of narrating the bootstrap for you:
+
+> **Ask Claude:** _"Watch the scale-up. Every 30 seconds tell me the ring status, which
+> node is currently joining, and whether NoSQLBench throughput has dipped."_
 
 **Start it, then talk over it** — bootstraps are serial and this takes ~6-7 minutes.
 Material to fill the time:
@@ -280,7 +337,10 @@ Material to fill the time:
   before starting the next — the thing you used to do by hand with a runbook and a
   Slack thread
 
-Come back at the end of Part 7 for `nodetool status` and the ownership shift.
+Come back at the end of Part 7 for the ownership shift:
+
+> **Ask Claude:** _"Give me the ring status — every node, its rack, its load, and
+> what percentage of the token range it owns."_
 
 **MEASURED, 17 Sep rehearsal** — these are real numbers from this cluster, not
 estimates:
@@ -327,6 +387,10 @@ for opposite reasons. The limit is now 256 MiB.
   results flow back as context.
 - **easy-cass-mcp:** domain-specific MCP server that speaks CQL fluently, deployed
   in-cluster. Claude Code → OpenShift Route (edge TLS) → easy-cass-mcp pod → Cassandra pods.
+  The endpoint is
+  `https://easy-cass-mcp-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com/mcp/`
+  — worth putting on the slide, because "the MCP server is a URL your agent dials" is the
+  whole architecture in one line.
 
   | Tool | What it does |
   |---|---|
@@ -342,9 +406,37 @@ for opposite reasons. The limit is now 256 MiB.
   - easy-cass-mcp returns only what's relevant, structured by node
   - **Takeaway: MCP server *design* matters as much as MCP server existence.**
 
+### A second MCP server, and why it matters more than it looks
+
+Also connected: **[grafana/mcp-grafana](https://github.com/grafana/mcp-grafana)**,
+Grafana Labs' own server. Run read-only — a Viewer service account, `--disable-write`,
+and the tool surface trimmed from ~60 to 17.
+
+Three reasons it earns its slide:
+
+- **It is not mine.** Everything else on stage is something I built. This is a vendor
+  arriving at the same pattern independently, which is the difference between "here is
+  my clever setup" and "here is where the ecosystem is going."
+- **It solves a real constraint.** Prometheus on this cluster is ClusterIP with no
+  Route. The server proxies PromQL *through* Grafana's datasource API, so it needs
+  only the Grafana URL and a token — nothing new exposed.
+- **It spans both layers.** It can reach our kube-prometheus-stack *and* OpenShift's
+  Thanos. That is Part 8's two-layer argument with the agent as the thing that spans
+  them, instead of you alt-tabbing between dashboards.
+
+> **The story worth telling, because it is true and it is recent.** Within ten minutes
+> of being connected, it caught a wrong number on this deck. Slide 17 claimed Cassandra
+> was pegged at 14/14 CPU. It was not — OpenShift's Thanos returns two identical
+> cAdvisor series per container, the panel summed them, and every CPU and memory reading
+> was double. The tell was already on the slide: the worker-node panel disagreed, and
+> had for days. **Three sources agreed only after I asked something that made me check.**
+>
+> That is the honest version of the whole talk. Not "the AI was right" — the AI made a
+> claim I could check against two other sources, and checking is what found it.
+
 ### Live Demo — Node Restart Under Load
 
-_The load test is still running. The ring just went to 9._
+_The load test is still running. The ring just went to 6._
 
 **Step 1 — "Is the cluster healthy?"**
 Claude calls `local_read_latency` / `local_write_latency` across all nodes. Show the
@@ -352,9 +444,13 @@ even distribution — and that the three newest nodes have lower counts because 
 only just joined.
 
 **Step 2 — Kill a node, live:**
-```bash
-kubectl delete pod demo-dc1-rack2-sts-0
-```
+
+> **Ask Claude:** _"Force-kill the pod `demo-dc1-rack2-sts-1` — no grace period, no
+> graceful drain. I want it to die the way a real node dies."_
+
+Ask for the force-kill explicitly. A polite `kubectl delete pod` gives Cassandra a clean
+drain, which is a demo of a rolling restart, not of a node failure. The 44-second recovery
+below is only impressive because nothing was handed over.
 
 **Step 3 — "What do you see now?"**
 Claude re-queries and surfaces the anomaly: surviving nodes in the hundreds of
@@ -362,8 +458,36 @@ thousands of ops, the restarted node at a fraction of that and ramping. It
 interprets it as a recent restart, not a fault, and notes the load test never
 dropped a query.
 
+**MEASURED, 17 Sep rehearsal.** Force-killed `demo-dc1-rack2-sts-1` with
+`--grace-period=0 --force` - no graceful drain, the way a node actually dies -
+while 60,014 ops/sec were flowing:
+
+| | |
+|---|---|
+| Node detected `DN` | ~24 s |
+| Back to `UN` | **44 s** |
+| Pod `3/3 Running` | **64 s** |
+| Throughput | 60,267 -> 57,082 -> 59,373 (worst dip ~5%) |
+| `unavailables` | **0** |
+| `failures` | **0** |
+| `timeouts` | **1**, over 10 minutes and ~36M operations |
+
+Quote the 1, not "zero" - it is a more credible number and it is the truth.
+
+**Two details worth showing, because they are the actual mechanism:**
+
+- The node logged **`Using saved tokens`** and reused its PVC
+  (`server-data-demo-dc1-rack2-sts-1`), keeping the same host ID. It did **not**
+  re-bootstrap - there was no streaming, because the data was already on disk.
+  Cassandra saw the same node returning from a brief outage, not a new one.
+- NoSQLBench will print red `ConnectionInitException` warnings. **Those are not
+  query failures.** They are the driver's admin thread rebuilding its connection
+  pool against the replacement pod's new IP, backing off 8.7s -> 14.9s -> 21.9s
+  -> 30.9s. Have that answer ready: point at `unavailables` and `timeouts` and
+  say "no query failed; that is a pool reconnect."
+
 **The point:** in the old world that was a maintenance window, a runbook, and a
-Slack thread. Here it's a 52-second demo with a natural-language debrief.
+Slack thread. Here it is a 64-second demo with a natural-language debrief.
 
 ---
 
@@ -410,6 +534,14 @@ compared all 9 nodes. The headline find:
 > Pods pegged at **6.0 / 6.0 CPU**, EC2 hosts at **30-70%**, and **zero pending
 > thread-pool tasks**.
 
+**Caveat on that 6.0 / 6.0.** It is exactly the same shape as the number corrected
+below — a per-pod CPU figure that lands suspiciously precisely on its own limit —
+and that EKS cluster no longer exists to re-measure. Its dashboard scraped the
+kubelet through our own Prometheus rather than OpenShift's Thanos, so it probably
+was not double-counted, but "probably" is the honest word. If you would rather not
+defend it live, the throttling *conclusion* stands on the OpenShift numbers alone;
+lead with those and treat the EKS run as the anecdote that started the hunt.
+
 That is CFS throttling at the cgroup level — invisible to `nodetool tpstats`,
 invisible to a flat dashboard. It accounted for the ~8k ops/sec gap between the
 100k target and the ~92k achieved.
@@ -432,19 +564,43 @@ the table-level setting is silently meaningless without the YAML setting.
 During rehearsal this cluster produced a second failure that pairs with the first
 almost too neatly.
 
-**Failure 1 — Cassandra cannot see its own ceiling.** Throttling is happening right
-now. Measured under load:
+**Failure 1 — Cassandra cannot see its own ceiling.** Throttling is real. Measured
+under load on **17 Sep at ring size 3** (corrected — see the note below):
 
-| | |
-|---|---|
-| Cassandra container CPU | 11.9 – 14.6 cores |
-| Configured limit | **14** |
-| CFS periods throttled | **0.10 – 0.22 %** |
-| Worker node CPU | 20 – 32 % |
+| | Ring size 3 (17 Sep) | Ring size 6 (21 Sep) |
+|---|---|---|
+| Cassandra container CPU | **6.7 – 8.8 cores** | 3.4 – 4.0 cores |
+| Configured limit | **14** | 14 |
+| Utilisation of quota | ~48 – 63 % | ~25 % |
+| CFS periods throttled | **peaks at 6.7 %** | 0.5 – 1.0 % |
+| Worker node CPU | 24 – 36 % | ~20 % |
 
 `nodetool tpstats` is clean, thread-pool queues are shallow. From inside Cassandra
 nothing is wrong — the ceiling is a cgroup quota, visible only in cAdvisor, via a
 *second* Grafana datasource pointed at OpenShift's Thanos.
+
+**The sharper version of this point.** The pod is throttled while sitting at roughly
+**60% of its CPU quota on average**. That is not a contradiction: CFS accounts in
+100 ms periods, so a burst — compaction, a GC pause, a flush — can exhaust a 1.4 s
+slice inside a single period and get parked, while the 5-minute average looks
+comfortable. *"We were only at 60% and still being throttled"* is a better teaching
+moment than *"we hit the limit"*, and it is the one that is actually true here.
+
+> **Correction, 21 Sep.** This table previously read 11.9 – 14.6 cores against a
+> limit of 14 — i.e. pods pegged at the ceiling. That number was wrong, and the
+> giveaway was on the same slide: a single pod burning 14.6 of a worker's 32 cores
+> is 46%, not the 20–32% the node panel reported. The cause was the dashboard, not
+> the cluster. OpenShift's Thanos returns **two identical cAdvisor series per
+> container** (undeduplicated Prometheus replicas), and the panel used
+> `sum by (pod)`, which double-counted every value. The CPU and memory panels are
+> now `avg by (pod)`; the CFS throttling panel was always a `sum/sum` ratio, so the
+> duplication cancelled and that number was never affected. Verified three ways:
+> `kubectl top`, the container's own `/sys/fs/cgroup/cpu.stat`, and `avg by (pod)`
+> all agree.
+>
+> Worth 30 seconds on stage if you want it: the observability layer was itself the
+> thing lying, and it took a third source to catch it. That is the same lesson as
+> the rest of Part 8, one level up.
 
 **Failure 2 — Kubernetes cannot see a dead node.** The disks filled. Two of three
 nodes shut down. And:
@@ -476,7 +632,8 @@ reach. Neither `nodetool` alone nor `kubectl` alone gets you there.
 3. Cassandra's **thread pool pending tasks** — shallow.
 4. Ask Claude `/diagnose`. Three signals that each look fine alone and only mean
    something together, which is exactly the reasoning a skill encodes.
-5. Raise the limit live and watch panel 8 go to zero.
+5. Raise the limit live — _"Raise the Cassandra container CPU limit on the `demo` cluster
+   from 14 to 24 cores and roll it out"_ — and watch panel 8 go to zero.
 
 Then put `kubectl get pods` beside `nodetool status` from the rehearsal
 screenshots. The two-layer point lands in about fifteen seconds.
@@ -495,9 +652,11 @@ guessing — which is the point. The skill already knew `die` was correct for a
 supervised process; it took a live outage to make me go and look.
 
 **Be straight about the constraint.** The 14-core limit is sized for two pods per
-worker after the scale-up. At ring size 3 each pod owns a whole 31.5-core worker,
-so right now that quota costs throughput for nothing — and any throughput number
-from this cluster comes from a deliberately constrained one. Say so.
+worker after the scale-up. At ring size 3 each pod has a whole ~31.5-core worker to
+itself, so the quota binds a pod that could otherwise spread out — and it measurably
+did: 6.7% of CFS periods throttled on 17 Sep while the worker sat at 24–36% idle
+capacity. Any throughput number from this cluster comes from a deliberately
+constrained one. Say so.
 
 **And `softPodAntiAffinity` is still on**, because three workers cannot host a
 six-node ring any other way. `/expert` calls it "defensible only for
@@ -530,8 +689,11 @@ that only confirms what you already did.
   - **Skills** give AI the knowledge to reason about what it sees
 - **Three things to take home:**
   1. Build domain-specific MCP servers, not generic ones. Context windows are precious.
+     And check whether one already exists — Grafana ships its own, and it found a bug
+     in this deck.
   2. Turn your runbooks into skills. If you wrote it down, Claude can follow it.
-  3. Combine both: MCP for observation, skills for action.
+  3. Combine both: MCP for observation, skills for action. Then **verify across
+     layers** — the dashboard was the thing lying, and only a second source caught it.
 - _"The operator alone manages the cluster. The full loop *operates* it."_
 - **Links:** workshop repo (QR slide),
   [easy-cass-mcp](https://github.com/rustyrazorblade/easy-cass-mcp),
@@ -546,23 +708,23 @@ Full detail in the README; this is the timing skeleton.
 
 | Clock | Action |
 |---|---|
-| T-180 | `kubectl get nodes -L topology.kubernetes.io/zone,workload` — assert 3/3/3 + tainted loadgen. **Hard gate.** |
-| T-178 | `./manifests/openshift/node-labels.sh` then `./scripts/deploy-openshift.sh` |
-| T-148 | Assert rack balance (1/1/1 at size 3); `kubectl get servicemonitor` non-empty; Grafana Route reachable |
-| T-143 | Verify MCP tools respond from Claude Code |
+| T-180 | Ask Claude: _"Show the worker nodes with their workload and rack labels and any taints — I need 3 Cassandra workers across 3 racks plus a tainted loadgen node."_ **Hard gate.** |
+| T-178 | `./manifests/openshift/node-labels.sh` then `./scripts/deploy-openshift.sh` — these two stay as scripts. They are the deploy, not a demo |
+| T-148 | Ask Claude: _"Check the ring: one pod per rack, all UN. Is there a ServiceMonitor? Is the Grafana Route serving?"_ |
+| T-143 | Ask Claude: _"Query all nodes for their release version via MCP"_ — proves the MCP path end to end, not just that the pod is up |
 | T-135 | `nosqlbench-payments-prepare-job` — schema + 50M-row load |
 | T-117 | **Pre-flight Medusa backup** to prove the NooBaa path, then delete it so the live one is a genuine first full backup |
 | T-109 | **Pre-flight Reaper repair** to ~20%, then abort — proves registration and `reaper_db` migration |
 | T-103 | Start the main NoSQLBench job |
 | T-100 → T-40 | **Soak.** Throughput settles, driver pool warms, Grafana accumulates history. Touch nothing. |
 | T-40 | Confirm sustained ops/sec. If it's short of target, lower `cyclerate` now rather than demoing a miss |
-| T-25 | Open the Routes in browser tabs and confirm they load. No port-forwards to babysit on OpenShift — that is one fewer thing to fail live |
+| T-25 | Open all three Routes in tabs and confirm they load **and that you are logged in** (see Live endpoints above): Grafana, Reaper, and the MCP `/mcp/` endpoint. No port-forwards to babysit on OpenShift — that is one fewer thing to fail live |
 | T-20 | Screenshot every live moment as a backup slide; Zoom share test at presentation font size |
 
 **The pre-warm rule:** anything that can fail *silently* (Medusa credentials, Reaper
 schema migration, ServiceMonitor discovery, MCP connectivity) gets proven before the
 audience arrives. Anything whose *duration is the point* (the backup upload, the
-repair progress bar, the 6→9 bootstrap) is done live. The backup and the repair each
+repair progress bar, the 3→6 bootstrap) is done live. The backup and the repair each
 run twice — once quietly to prove the plumbing, once on camera.
 
 **Numbers marked «MEASURE AT REHEARSAL» must be filled in before the talk.** Do not
