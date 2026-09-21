@@ -273,6 +273,42 @@ one fewer thing to fail live.)
   cluster? Show me its current repair runs and the segment progress on each."_
 - Leave it running — come back to it in Part 8.
 
+**MEASURED 21 Sep**, full (non-incremental) repair of `payments`, idle 6-node ring:
+
+| | |
+|---|---|
+| Total segments | **436** across the three tables |
+| Rate | **~2.0 segments/min** |
+| Projected full run | **~3.6 hours** |
+| After 10 min | 21 segments, 4.8% |
+
+**Do not apologise for that number — it is the entire argument for Reaper.** A full
+repair of 50 GB is a multi-hour operation that must be split into hundreds of
+resumable segments, paced so it does not compete with production traffic, and
+survive a node restarting underneath it. That is a job you do not want to run by
+hand from a terminal, and it is exactly what Reaper does unattended. If the bar were
+"finishes during a conference talk", nobody would need the tool.
+
+What the audience should see is **segments incrementing roughly every 30 seconds**,
+which is plenty to make the point on screen.
+
+**Two caveats for the day:**
+- These numbers are from an **idle** ring at size 6. During the talk NoSQLBench is at
+  60k ops/sec and Part 5b runs at **size 3**, so expect it to be slower, not faster.
+- **Reaper keeps its state in `reaper_db` inside the cluster**, so it is sensitive to
+  the cluster going away — but far less than you would expect. Two different events,
+  two different outcomes, both measured 21 Sep:
+
+  | Event | Reaper | The repair |
+  |---|---|---|
+  | **Force-kill one node** (`--grace-period=0 --force`) — what Part 7 does | **no restart** | **never paused.** Segments kept incrementing straight through: 22 → 23 → 24 … at the same ~2/min |
+  | **Rolling restart of every pod** (a CR edit) | exits, code 1 after 9 s, recovers on its own | resumes from the last completed segment |
+
+  **The first row is the one worth saying out loud in Part 7.** You kill a node in
+  front of the audience while a repair is running, and the repair does not notice.
+  That is segmented, resumable, coordinated repair doing exactly what it exists to
+  do — and it is a stronger claim than the node-restart timing on its own.
+
 ### 5c. Medusa (~4 min)
 
 > **Ask Claude:** _"Start a full Medusa backup from
@@ -690,6 +726,10 @@ that only confirms what you already did.
 > and I can tell you exactly why for each one."_
 
 **Check Reaper here** — the repair from Part 5b should have made real progress.
+At ~2 segments/min, roughly 25–30 minutes after you started it, expect **12–15%**
+(~55–65 of 436 segments). Say the percentage out loud rather than implying it is
+nearly done: a repair that is 13% through after half an hour is the honest picture,
+and it is why the thing runs unattended.
 
 - **Two skills, two scopes — same mechanism:**
   - `cassandra-k8s-deploy`: general expertise, taken everywhere — EKS/GKE/AKS,
