@@ -9,6 +9,11 @@
 
 **Style:** Heavy live demo — Claude Code open on screen throughout Parts 5-8.
 
+> **Presenting from this?** Don't. `docs/talk-track.md` is the run sheet — the beats,
+> the measured durations, what to say while each one runs, and the failure playbook.
+> This document is the design: why each segment exists and what was measured to get
+> there. Keep the track on your second screen; read this one beforehand.
+
 > **Everything on this outline is driven from Claude Code in natural language.** There is
 > no terminal typing in this talk. Claude is connected to two things at once: the
 > **OpenShift cluster** (kubectl/oc, for pods, nodes, CRDs, scaling, killing things) and
@@ -369,7 +374,10 @@ Then hand Claude the job of narrating the bootstrap for you:
 > **Ask Claude:** _"Watch the scale-up. Every 30 seconds tell me the ring status, which
 > node is currently joining, and whether NoSQLBench throughput has dipped."_
 
-**Start it, then talk over it** — bootstraps are serial and this takes ~6-7 minutes.
+**Start it, then talk over it** — bootstraps are serial and this takes **9 min 20 s**
+(measured, not the ~6-7 min previously assumed). Part 6 is budgeted 6 minutes, so the
+scale finishes roughly 3 minutes INTO Part 7. That is fine by design — but it means
+**do not force-kill a node in Part 7 until the ring is 6/6 UN.** See `docs/talk-track.md`.
 Material to fill the time:
 
 - Each rack goes 1 → 2. `size` must be a multiple of 3 or the racks go unbalanced
