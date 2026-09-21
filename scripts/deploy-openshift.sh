@@ -206,44 +206,65 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 5: Medusa bucket (NooBaa ObjectBucketClaim)
+# Step 5: Medusa's S3 endpoint (MinIO on Ceph RBD)
 #
-# Replaces the AWS S3 bucket + IRSA role the EKS path needs. The OBC produces a
-# ConfigMap (bucket name/host/port) and a Secret (AWS-style key pair). Medusa
-# wants a single `credentials` key in INI format, so we translate.
+# NOT NooBaa. ODF offers S3 via Ceph RGW or NooBaa (MCG); this cluster's ODF is
+# in EXTERNAL mode and exposes no RGW, and NooBaa's pv-pool agents are pinned at
+# 400Mi by its operator -- OOMKilled ~75s into a full backup of a loaded ring,
+# with three mitigations measured and all failed. See docs/TROUBLESHOOTING.md.
+#
+# MinIO gives the same properties (in-cluster, no AWS, no IAM ticket,
+# s3_compatible) with limits we control.
 # ---------------------------------------------------------------------------
 echo ""
-echo ">>> Step 5/8: Provisioning Medusa's backup bucket via NooBaa..."
-kubectl apply -f "$OCP_DIR/medusa-obc.yaml"
+echo ">>> Step 5/8: Deploying MinIO as Medusa's S3 endpoint..."
 
-echo "    Waiting for the ObjectBucketClaim to be Bound..."
-for i in $(seq 1 60); do
-  OBC_PHASE=$(kubectl get objectbucketclaim medusa-backups -n "$NAMESPACE" \
-    -o jsonpath='{.status.phase}' 2>/dev/null || true)
-  [ "$OBC_PHASE" = "Bound" ] && break
-  printf "    Waiting... (%ds)\r" $((i * 5))
-  sleep 5
-done
-echo ""
-if [ "${OBC_PHASE:-}" != "Bound" ]; then
-  echo "ERROR: ObjectBucketClaim did not reach Bound (phase=${OBC_PHASE:-unknown})."
-  echo "       Check NooBaa: kubectl get noobaa -n openshift-storage"
-  exit 1
+# The root credential is generated here, never committed. An existing secret is
+# reused so re-running the script does not orphan the password MinIO already
+# wrote its data under.
+if kubectl get secret minio-root -n "$NAMESPACE" >/dev/null 2>&1; then
+  echo "    Reusing existing minio-root secret."
+else
+  MINIO_PASS_GEN="${MINIO_PASSWORD:-$(openssl rand -hex 24)}"
+  kubectl create secret generic minio-root -n "$NAMESPACE" \
+    --from-literal=MINIO_ROOT_USER="${MINIO_USER_NAME:-medusa}" \
+    --from-literal=MINIO_ROOT_PASSWORD="$MINIO_PASS_GEN"
+  echo "    Generated minio-root credentials."
 fi
 
-BUCKET_NAME=$(kubectl get configmap medusa-backups -n "$NAMESPACE" -o jsonpath='{.data.BUCKET_NAME}')
-AWS_KEY=$(kubectl get secret medusa-backups -n "$NAMESPACE" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
-AWS_SECRET=$(kubectl get secret medusa-backups -n "$NAMESPACE" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
-echo "    Bucket: $BUCKET_NAME"
+kubectl apply -f "$OCP_DIR/minio.yaml"
 
-# Medusa reads an INI-format `credentials` key, not AWS_* env-style keys.
-kubectl create secret generic medusa-bucket-key \
+echo "    Waiting for MinIO to become ready..."
+kubectl wait --for=condition=available deployment/minio \
+  -n "$NAMESPACE" --timeout=300s || {
+  echo "ERROR: MinIO did not become available."
+  echo "       Check: kubectl get pods -n $NAMESPACE -l app=minio"
+  exit 1
+}
+
+MINIO_USER=$(kubectl get secret minio-root -n "$NAMESPACE" -o jsonpath='{.data.MINIO_ROOT_USER}' | base64 -d)
+MINIO_PASS=$(kubectl get secret minio-root -n "$NAMESPACE" -o jsonpath='{.data.MINIO_ROOT_PASSWORD}' | base64 -d)
+BUCKET_NAME="medusa-backups"
+
+# Create the bucket. Medusa does not create it for you, and a missing bucket
+# surfaces as an opaque 403 on HeadObject rather than anything obvious.
+echo "    Creating bucket $BUCKET_NAME..."
+kubectl run minio-mkbucket-$$ --rm -i --restart=Never -n "$NAMESPACE" \
+  --image=quay.io/minio/mc:latest --command -- sh -c "
+    mc alias set local http://minio.$NAMESPACE.svc.cluster.local:9000 '$MINIO_USER' '$MINIO_PASS' >/dev/null 2>&1 &&
+    mc mb --ignore-existing local/$BUCKET_NAME >/dev/null 2>&1 &&
+    echo BUCKET_OK" 2>/dev/null | grep -q BUCKET_OK && \
+  echo "    Bucket ready: $BUCKET_NAME" || \
+  echo "    WARNING: could not confirm bucket creation; Medusa may fail on first backup."
+
+# Medusa reads an INI-format `credentials` key, not AWS_*-style env vars.
+kubectl create secret generic medusa-minio-key \
   -n "$NAMESPACE" \
   --from-literal=credentials="[default]
-aws_access_key_id = $AWS_KEY
-aws_secret_access_key = $AWS_SECRET" \
+aws_access_key_id = $MINIO_USER
+aws_secret_access_key = $MINIO_PASS" \
   --dry-run=client -o yaml | kubectl apply -f -
-echo "    Secret medusa-bucket-key written."
+echo "    Secret medusa-minio-key written."
 
 # ---------------------------------------------------------------------------
 # Step 6: K8ssandraCluster
@@ -326,6 +347,74 @@ MCP_HOST=$(kubectl get route easy-cass-mcp -n "$NAMESPACE" -o jsonpath='{.spec.h
 REAPER_HOST=$(kubectl get route reaper -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || true)
 GRAFANA_HOST=$(kubectl get route grafana -n monitoring -o jsonpath='{.spec.host}' 2>/dev/null || true)
 
+# ---------------------------------------------------------------------------
+# Grafana service account for the read-only Grafana MCP server.
+#
+# This MUST be minted on every deploy. The kube-prometheus-stack chart gives
+# Grafana an emptyDir for its database, so service accounts and their tokens do
+# not survive a pod restart -- including the `rollout restart` this very script
+# performs in Step 3 to reload the Thanos datasource. A token created by hand
+# will be silently dead the next time this runs.
+#
+# Viewer is deliberately the lowest role that works. Verified on Grafana 13:
+# it can list datasources and query them through the datasource proxy, while
+# dashboard-create, annotation-create and datasource-delete all return 403.
+# ---------------------------------------------------------------------------
+GRAFANA_TOKEN_FILE="$SCRIPT_DIR/../.grafana-mcp-token"
+GRAFANA_MCP_OK=false
+if [ -n "$GRAFANA_HOST" ]; then
+  echo "    Minting a read-only Grafana service account for the MCP server..."
+  GF_API="https://$GRAFANA_HOST"
+  GF_AUTH="admin:$GRAFANA_PASSWORD"
+
+  for _ in $(seq 1 30); do
+    curl -sf --max-time 10 "$GF_API/api/health" >/dev/null 2>&1 && break
+    sleep 5
+  done
+
+  # Idempotent: drop any previous account of this name so the token we write
+  # is always the one that works.
+  OLD_ID=$(curl -s --max-time 20 -u "$GF_AUTH" \
+      "$GF_API/api/serviceaccounts/search?query=claude-mcp-readonly" 2>/dev/null \
+      | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+    a=[x for x in d.get("serviceAccounts",[]) if x.get("name")=="claude-mcp-readonly"]
+    print(a[0]["id"] if a else "")
+except Exception: print("")' 2>/dev/null || true)
+  if [ -n "$OLD_ID" ]; then
+    curl -s --max-time 20 -u "$GF_AUTH" -X DELETE \
+      "$GF_API/api/serviceaccounts/$OLD_ID" >/dev/null 2>&1 || true
+  fi
+
+  SA_ID=$(curl -s --max-time 20 -u "$GF_AUTH" -H 'Content-Type: application/json' \
+      -d '{"name":"claude-mcp-readonly","role":"Viewer","isDisabled":false}' \
+      "$GF_API/api/serviceaccounts" 2>/dev/null \
+      | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("id",""))
+except Exception: print("")' 2>/dev/null || true)
+
+  if [ -n "$SA_ID" ]; then
+    GF_TOKEN=$(curl -s --max-time 20 -u "$GF_AUTH" -H 'Content-Type: application/json' \
+        -d '{"name":"claude-code-mcp"}' \
+        "$GF_API/api/serviceaccounts/$SA_ID/tokens" 2>/dev/null \
+        | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("key",""))
+except Exception: print("")' 2>/dev/null || true)
+    if [ -n "$GF_TOKEN" ]; then
+      printf '%s' "$GF_TOKEN" > "$GRAFANA_TOKEN_FILE"
+      chmod 600 "$GRAFANA_TOKEN_FILE"
+      GRAFANA_MCP_OK=true
+      echo "    Wrote .grafana-mcp-token (gitignored, Viewer role)."
+    fi
+  fi
+
+  if [ "$GRAFANA_MCP_OK" != true ]; then
+    echo "    WARNING: could not mint a Grafana service-account token."
+    echo "             The grafana MCP server will fail to authenticate."
+  fi
+fi
+
 echo ""
 echo "============================================"
 if [ "$DC_OK" = true ]; then
@@ -342,7 +431,7 @@ echo ""
 [ -n "$GRAFANA_HOST" ] && echo "Grafana:  https://$GRAFANA_HOST  (admin / $GRAFANA_PASSWORD)"
 [ -n "$REAPER_HOST" ]  && echo "Reaper:   https://$REAPER_HOST/webui/index.html"
 echo ""
-echo "Medusa bucket: $BUCKET_NAME (NooBaa, in-cluster)"
+echo "Medusa S3: MinIO in-cluster — bucket $BUCKET_NAME (minio.$NAMESPACE.svc:9000)"
 echo "  kubectl apply -f $OCP_DIR/../cassandra/medusa-backup-job.yaml"
 echo ""
 echo "Load test (two stages):"
@@ -357,7 +446,38 @@ if [ -n "$MCP_HOST" ]; then
   # Edge TLS means this is real https — no --allow-http needed, unlike the
   # plain-HTTP NLB the EKS profile produced.
   MCP_JSON="$SCRIPT_DIR/../.mcp.json"
-  cat > "$MCP_JSON" <<EOF
+  # NOTE: this file is REWRITTEN, not merged. Both servers must be emitted here
+  # or a redeploy silently removes whichever one is left out.
+  MCP_GRAFANA_BIN="${MCP_GRAFANA_BIN:-$HOME/.local/bin/mcp-grafana}"
+  if [ "$GRAFANA_MCP_OK" = true ] && [ -x "$MCP_GRAFANA_BIN" ]; then
+    cat > "$MCP_JSON" <<EOF
+{
+  "mcpServers": {
+    "easy-cass-mcp": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://$MCP_HOST/mcp/"
+      ]
+    },
+    "grafana": {
+      "command": "$MCP_GRAFANA_BIN",
+      "args": [
+        "--disable-write",
+        "--enabled-tools",
+        "search,datasource,prometheus,dashboard,navigation"
+      ],
+      "env": {
+        "GRAFANA_URL": "https://$GRAFANA_HOST",
+        "GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE": "$(cd "$SCRIPT_DIR/.." && pwd)/.grafana-mcp-token"
+      }
+    }
+  }
+}
+EOF
+    echo ".mcp.json updated: easy-cass-mcp + grafana (read-only)."
+  else
+    cat > "$MCP_JSON" <<EOF
 {
   "mcpServers": {
     "easy-cass-mcp": {
@@ -370,8 +490,17 @@ if [ -n "$MCP_HOST" ]; then
   }
 }
 EOF
-  echo ".mcp.json updated with the Route hostname."
-  echo "Restart Claude Code to reconnect easy-cass-mcp."
+    echo ".mcp.json updated with the Route hostname (grafana MCP omitted)."
+    [ -x "$MCP_GRAFANA_BIN" ] || echo "  (mcp-grafana not found at $MCP_GRAFANA_BIN)"
+  fi
+  echo ""
+  echo "RESTART CLAUDE CODE before doing anything else."
+  echo "  - easy-cass-mcp: the Route hostname above is new to this session."
+  echo "  - grafana: mcp-grafana reads the service-account token ONCE at"
+  echo "    startup, not per request. This deploy just minted a NEW token, so"
+  echo "    an already-running server will return 401 Unauthorized on every"
+  echo "    call until it is restarted. Verified: the token is valid via curl"
+  echo "    while the running server still rejects it."
   echo ""
   echo "NOTE: claude_desktop_config.json is NOT updated automatically."
 else

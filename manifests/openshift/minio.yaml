@@ -1,0 +1,107 @@
+# MinIO: the S3 endpoint Medusa backs up to on this cluster.
+#
+# WHY NOT NooBaa / ObjectBucketClaim.
+# OpenShift Data Foundation offers S3 two ways: Ceph RGW, and NooBaa (MCG).
+# This cluster's ODF is in EXTERNAL mode and exposes NO RGW -- no
+# CephObjectStore, no rgw Service -- so NooBaa was the only ODF-native option.
+# It cannot carry this workload: its pv-pool agent pods are pinned at
+# 100m CPU / 400Mi memory by the NooBaa operator, no CRD exposes that limit,
+# and they are OOMKilled ~75 seconds into a full backup of a loaded ring.
+# Three mitigations were measured and all failed. Full write-up and numbers:
+# docs/TROUBLESHOOTING.md, "Medusa backup fails with InvalidBucketState".
+#
+# MinIO is a single Go binary on a Ceph RBD PVC. It keeps every property that
+# mattered -- in-cluster, no AWS account, no IAM ticket, s3_compatible -- and
+# unlike NooBaa's agents its resource limits are ours to set.
+#
+# MEASURED 21 Sep, full backup of a loaded 6-node ring:
+#   47.84 GB, 4732 files, 6/6 nodes SUCCESS, 8m38s
+#   MinIO peak memory 1.05 GiB against an 8Gi limit (13%)
+#
+# Deployed to `default` deliberately: that namespace carries
+# pod-security.kubernetes.io/enforce: privileged (OpenShift exempts `default`),
+# which is why MinIO's own UID is admitted without an SCC grant. See CLAUDE.md.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-data
+  namespace: default
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ocs-storagecluster-ceph-rbd
+  resources:
+    requests:
+      # Dataset is ~8.3 GB/node x 6 = ~50 GB per full backup, and Medusa keeps
+      # maxBackupCount: 3. 250Gi leaves room for three full backups plus slack.
+      storage: 250Gi
+---
+# NOTE: the `minio-root` Secret is NOT defined here, on purpose. It is created by
+# scripts/deploy-openshift.sh with a password generated at deploy time, so no
+# credential is ever committed to this repo. If you apply this file by hand,
+# create it first:
+#
+#   kubectl create secret generic minio-root -n default \
+#     --from-literal=MINIO_ROOT_USER=medusa \
+#     --from-literal=MINIO_ROOT_PASSWORD="$(openssl rand -hex 24)"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: default
+  labels: {app: minio}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # RWO volume: never two pods holding it at once
+  selector:
+    matchLabels: {app: minio}
+  template:
+    metadata:
+      labels: {app: minio}
+    spec:
+      nodeSelector:
+        workload: utility
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: minio-data
+      containers:
+        - name: minio
+          image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+          args: ["server", "/data", "--console-address", ":9001"]
+          envFrom:
+            - secretRef: {name: minio-root}
+          ports:
+            - {containerPort: 9000, name: s3}
+            - {containerPort: 9001, name: console}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          resources:
+            requests: {cpu: "500m", memory: 2Gi}
+            limits:
+              # The whole point. NooBaa's agents were capped at 400Mi with no
+              # way to raise it; here the limit is ours to set.
+              cpu: "4"
+              memory: 8Gi
+          readinessProbe:
+            httpGet: {path: /minio/health/ready, port: 9000}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /minio/health/live, port: 9000}
+            initialDelaySeconds: 20
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: default
+  labels: {app: minio}
+spec:
+  type: ClusterIP
+  selector: {app: minio}
+  ports:
+    - {name: s3, port: 9000, targetPort: 9000}
+    - {name: console, port: 9001, targetPort: 9001}

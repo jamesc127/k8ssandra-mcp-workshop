@@ -742,3 +742,93 @@ sudo ln -sf $(which aws) /usr/local/bin/aws
 ### Binding parse errors with `<<template>>` syntax
 **Cause**: Template variable syntax not supported in this NB5 version.
 **Fix**: Hardcode values directly in the workload YAML instead of using `<<var:default>>`.
+
+## Medusa / Object Storage (OpenShift)
+
+### Medusa backup fails with `InvalidBucketState` on every node
+
+**Symptom.** A `MedusaBackupJob` reports `failed` on all nodes within a couple of
+minutes. The medusa sidecar log shows:
+
+```
+botocore.exceptions.ClientError: An error occurred (InvalidBucketState) when
+calling the PutObject operation: The request is not valid with the current
+state of the bucket.
+```
+
+**This is not a credentials problem, a bucket-policy problem, or a Medusa
+problem**, which is exactly why it wastes time. It is the object store dying
+under the upload.
+
+**Cause.** NooBaa (ODF's Multicloud Object Gateway) serves its default bucket
+from a `pv-pool` BackingStore. The NooBaa operator pins those agent pods at
+**100m CPU / 400Mi memory**. A full Medusa backup of a loaded ring OOMKills
+them; the store then reports `ALL_NODES_OFFLINE`, the bucket class reports
+`NOT_ENOUGH_HEALTHY_RESOURCES`, and every `PutObject` returns
+`InvalidBucketState`.
+
+Confirm it with:
+
+```bash
+kubectl get pods -n openshift-storage | grep backing-store   # OOMKilled / CrashLoopBackOff
+kubectl get events -n openshift-storage | grep -i backingstore
+```
+
+**MEASURED 21 Sep 2026**, full backup of a 6-node ring (~8.3 GB and 248 files
+per node). Agent pods OOMKilled ~75 seconds in. Three mitigations, all failed:
+
+| Mitigation | Change | Result |
+|---|---|---|
+| More pool pods | `numVolumes` 1 → 3 (3× memory, 150Gi) | OOM |
+| Less concurrency | `concurrentTransfers` 4 → 1 (24 → 6 streams) | OOM |
+| Less bandwidth | `transferMaxBandwidth` 150 → 10MB/s (15× slower) | OOM in 75s |
+
+A 15× rate cut not changing time-to-failure is the tell: a 400Mi pod cannot
+buffer GB-scale sstable uploads however slowly they arrive.
+
+**There is no supported fix.** The agent pod's CPU/memory is not exposed
+anywhere:
+
+- `BackingStore.spec.pvPool.resources` is **VolumeResources** — storage only
+- The NooBaa CR exposes `coreResources`, `dbResources`, `logResources`,
+  `pvPoolDefaultStorageClass` — nothing for agents
+- The pods are owned directly by the BackingStore (no Deployment/StatefulSet),
+  so manual patches are reverted by the operator
+
+The usual escape hatch — native Ceph RGW — **does not exist on this cluster**:
+ODF is in external mode with no `CephObjectStore` and no rgw Service. Check
+yours before assuming otherwise:
+
+```bash
+kubectl get cephobjectstore -n openshift-storage
+kubectl get storageclass | grep -i rgw
+```
+
+**Fix**: run MinIO instead — `manifests/openshift/minio.yaml`. Same properties
+(in-cluster, no AWS account, no IAM ticket, `s3_compatible`), but the resource
+limits are yours. Measured on the same ring: **47.84 GB, 4732 files, 6/6 nodes
+SUCCESS in 8m38s**, MinIO peaking at **1.05 GiB of an 8Gi limit**.
+
+### Medusa fails with "Backup <name> already exists"
+
+**Cause**: Medusa stores backup metadata in the *bucket*, not in Kubernetes.
+Deleting the `MedusaBackupJob` object frees the Kubernetes name but not the
+one in object storage.
+
+**Fix**: use a new backup name, or purge the old backup from the bucket first.
+
+### Backup fails immediately after changing `spec.medusa.storageProperties`
+
+**Cause**: editing `storageProperties` re-renders `medusa.ini` and the operator
+performs a **rolling restart of the whole ring** to pick it up. A backup started
+during that window races pods that are being recreated, and fails with
+`ConnectionRefusedError` against 9042.
+
+**Fix**: wait for the roll to finish before starting a backup:
+
+```bash
+kubectl get cassandradatacenter dc1 -n default \
+  -o jsonpath='{range .status.conditions[?(@.type=="Updating")]}{.status}{end}'
+```
+
+Start the backup only when that prints `False` and all pods are `3/3`.

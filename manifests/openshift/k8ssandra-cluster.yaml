@@ -276,22 +276,30 @@ spec:
 
   medusa:
     storageProperties:
-      # NooBaa speaks the S3 API but is not AWS, so this is s3_compatible with
-      # an explicit host rather than storageProvider: s3 with a region.
+      # MinIO, deployed by manifests/openshift/minio.yaml. s3_compatible with an
+      # explicit host rather than storageProvider: s3 with a region -- there is
+      # no AWS here at all.
+      #
+      # NOT NooBaa. OpenShift Data Foundation's Multicloud Object Gateway is the
+      # obvious in-cluster S3 on paper, and it does not work for this workload.
+      # See docs/TROUBLESHOOTING.md ("Medusa backup fails with InvalidBucketState")
+      # for the measurements; the short version is that its pv-pool agent pods
+      # are pinned at 400Mi by the operator, no CRD exposes that limit, and they
+      # are OOMKilled ~75s into a full backup of a loaded ring.
       storageProvider: s3_compatible
-      host: s3.openshift-storage.svc.cluster.local
-      port: 443
-      secure: true
-      # NooBaa's in-cluster endpoint presents a self-signed certificate. The
-      # traffic never leaves the cluster network.
+      host: minio.default.svc.cluster.local
+      port: 9000
+      # Plain HTTP on a ClusterIP Service that is never routed outside the
+      # cluster. Both keys must be set EXPLICITLY -- left unset they render as
+      # `False` in medusa.ini anyway, but only by accident. See pitfall 11.
+      secure: false
       sslVerify: false
-      region: us-east-1  # ignored by NooBaa, but the client requires a value
-      # Both of these are filled in by scripts/deploy-openshift.sh from the
-      # ObjectBucketClaim — the bucket name is generated, so it cannot be
-      # hardcoded here.
-      bucketName: REPLACE_WITH_OBC_BUCKET
+      region: us-east-1  # ignored by MinIO, but the S3 client requires a value
+      bucketName: medusa-backups
       storageSecretRef:
-        name: medusa-bucket-key
+        # Written by scripts/deploy-openshift.sh in INI format. Medusa wants a
+        # `credentials` key, not AWS_*-style environment variables.
+        name: medusa-minio-key
       prefix: demo
       transferMaxBandwidth: 150MB/s
       concurrentTransfers: 4

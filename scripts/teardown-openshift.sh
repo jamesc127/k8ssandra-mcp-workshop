@@ -2,6 +2,7 @@
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-default}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "============================================"
 echo "  K8ssandra Workshop - OpenShift Teardown"
@@ -49,11 +50,13 @@ echo ">>> Deleting Cassandra PVCs..."
 kubectl delete pvc -l cassandra.datastax.com/cluster=demo -n "$NAMESPACE" --ignore-not-found
 
 echo ""
-echo ">>> Deleting the Medusa bucket..."
-# Deleting the OBC deletes the NooBaa bucket and its contents. Unlike the EKS
-# path there is no out-of-band S3 bucket to preserve — it all lives here.
-kubectl delete objectbucketclaim medusa-backups -n "$NAMESPACE" --ignore-not-found
-kubectl delete secret medusa-bucket-key -n "$NAMESPACE" --ignore-not-found
+echo ">>> Deleting MinIO and the Medusa bucket..."
+# MinIO's PVC holds every backup. Unlike the EKS path there is no out-of-band
+# S3 bucket to preserve — it all lives here, and it all goes.
+kubectl delete deployment minio -n "$NAMESPACE" --ignore-not-found
+kubectl delete service minio -n "$NAMESPACE" --ignore-not-found
+kubectl delete pvc minio-data -n "$NAMESPACE" --ignore-not-found
+kubectl delete secret medusa-minio-key minio-root -n "$NAMESPACE" --ignore-not-found
 
 echo ""
 echo ">>> Uninstalling k8ssandra-operator..."

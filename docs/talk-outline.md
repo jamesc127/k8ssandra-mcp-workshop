@@ -30,7 +30,7 @@
 > Three platform differences change what is on screen, and each is worth naming rather than
 > hiding — they are all good teaching moments:
 > - **Racks map to nodes, not AZs.** This cluster has no zone labels at all.
-> - **Backups go to NooBaa**, OpenShift's in-cluster S3, not AWS S3. No IAM to request.
+> - **Backups go to in-cluster S3** (MinIO on Ceph), not AWS S3. No IAM to request.
 > - **Everything is exposed by Route**, not a load balancer. The MCP endpoint is real https.
 >
 > The ring is 3 nodes scaling to 6, not 6 to 9 — the cluster has three Cassandra workers.
@@ -279,20 +279,39 @@ one fewer thing to fail live.)
 > `manifests/cassandra/medusa-backup-job.yaml`, then keep an eye on the MedusaBackupJob
 > and tell me as each node finishes."_
 
-Talk while it uploads (~«MEASURE AT REHEARSAL»):
-- **The bucket is in-cluster.** NooBaa — OpenShift Data Foundation's S3 gateway —
-  provisioned it from a nine-line ObjectBucketClaim. No AWS account, no IAM request,
-  no ticket to a cloud team. Medusa just sees an S3 endpoint.
-- Worth naming: Medusa is configured `s3_compatible` rather than `s3`, because
-  NooBaa speaks the API without being AWS. That portability is the point.
+**Timing, measured 21 Sep:** a full backup of a loaded **6-node** ring took
+**8 min 38 s** — 47.84 GB across 4,732 files. Part 5c runs at **size 3**, so expect
+roughly **4–5 minutes**. That fits the segment, but only just: start it *first*, then
+talk. Do not start it after the explanation.
+
+Talk while it uploads:
+- **The S3 endpoint is in-cluster.** MinIO, on a Ceph RBD volume, in the same
+  namespace as Cassandra. No AWS account, no IAM request, no ticket to a cloud team.
+  Medusa just sees an S3 endpoint.
+- Worth naming: Medusa is configured `s3_compatible` rather than `s3`, with an
+  explicit host instead of an AWS region. **That is the portability, and it is
+  load-bearing rather than decorative** — the same five lines point at MinIO, AWS S3,
+  GCS or anything else that speaks the API. It is the reason this workshop can run
+  on a cluster with no cloud account attached to it at all.
 - `backupType: full` so every sstable re-uploads and you can actually watch it
+- The sidecar doing the work is the **medusa container inside every Cassandra pod** —
+  point at it in the Part 0 pod list. Backup is not a separate system to operate
 
 Then the payoff:
 
-> **Ask Claude:** _"Show me the finished MedusaBackup objects with the per-node sizes, and
-> confirm which bucket the ObjectBucketClaim handed Medusa."_
+> **Ask Claude:** _"Show me the finished MedusaBackup objects with the per-node sizes,
+> and how much is now sitting in the MinIO bucket."_
 
 Per-node backup sizes, in object storage that did not exist ten minutes ago.
+
+> **If someone asks "why not ODF's own object gateway?"** — and on an OpenShift
+> audience someone will — the honest answer is that it was tried and it could not
+> carry the load. ODF's Multicloud Object Gateway serves buckets from pods its
+> operator pins at 400Mi, and a full backup of this ring OOMKilled them roughly 75
+> seconds in. Three mitigations were measured and all failed; the limit is not
+> exposed by any CRD. `docs/TROUBLESHOOTING.md` has the numbers if you want to be
+> precise. **Have the answer ready; do not put it on a slide** — it is a good answer
+> to a question and a distraction as a bullet.
 
 ---
 
@@ -711,15 +730,30 @@ Full detail in the README; this is the timing skeleton.
 | T-180 | Ask Claude: _"Show the worker nodes with their workload and rack labels and any taints — I need 3 Cassandra workers across 3 racks plus a tainted loadgen node."_ **Hard gate.** |
 | T-178 | `./manifests/openshift/node-labels.sh` then `./scripts/deploy-openshift.sh` — these two stay as scripts. They are the deploy, not a demo |
 | T-148 | Ask Claude: _"Check the ring: one pod per rack, all UN. Is there a ServiceMonitor? Is the Grafana Route serving?"_ |
-| T-143 | Ask Claude: _"Query all nodes for their release version via MCP"_ — proves the MCP path end to end, not just that the pod is up |
+| T-143 | **Restart Claude Code first**, then verify BOTH servers: _"Query all nodes for their release version"_ (easy-cass-mcp) and _"List the Grafana datasources"_ (grafana). See the MCP restart note below — this step catches a failure that is otherwise invisible until you are on camera |
 | T-135 | `nosqlbench-payments-prepare-job` — schema + 50M-row load |
-| T-117 | **Pre-flight Medusa backup** to prove the NooBaa path, then delete it so the live one is a genuine first full backup |
+| T-117 | **Pre-flight Medusa backup** to prove the MinIO path end to end, then delete it so the live one is a genuine first full backup. Use a DIFFERENT name for the live one — Medusa keeps backup metadata in the bucket, so a reused name fails with "already exists" even after the Kubernetes object is deleted |
 | T-109 | **Pre-flight Reaper repair** to ~20%, then abort — proves registration and `reaper_db` migration |
 | T-103 | Start the main NoSQLBench job |
 | T-100 → T-40 | **Soak.** Throughput settles, driver pool warms, Grafana accumulates history. Touch nothing. |
 | T-40 | Confirm sustained ops/sec. If it's short of target, lower `cyclerate` now rather than demoing a miss |
 | T-25 | Open all three Routes in tabs and confirm they load **and that you are logged in** (see Live endpoints above): Grafana, Reaper, and the MCP `/mcp/` endpoint. No port-forwards to babysit on OpenShift — that is one fewer thing to fail live |
 | T-20 | Screenshot every live moment as a backup slide; Zoom share test at presentation font size |
+
+> **The MCP restart trap — this bites every redeploy.**
+> `deploy-openshift.sh` rewrites `.mcp.json` and mints a **new** Grafana
+> service-account token on every run. It has to: the kube-prometheus-stack chart
+> gives Grafana an `emptyDir` for its database, so service accounts do not survive
+> the pod restart the script itself performs.
+>
+> `mcp-grafana` reads that token **once at startup, not per request.** So an
+> already-running Claude Code session keeps presenting the old token and gets
+> `401 Unauthorized` on every call — while `curl` with the new token works fine.
+> Verified on 21 Sep: valid token, dead server, no error anywhere except the tool
+> call itself.
+>
+> **Restart Claude Code after every deploy, then check both servers.** That is what
+> T-143 is for.
 
 **The pre-warm rule:** anything that can fail *silently* (Medusa credentials, Reaper
 schema migration, ServiceMonitor discovery, MCP connectivity) gets proven before the

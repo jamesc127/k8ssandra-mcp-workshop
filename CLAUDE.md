@@ -20,7 +20,7 @@ work, but are not what is being rehearsed.
 - **EKS trial** (`eksctl-cluster.yaml`) — 5 workers: 3 Cassandra (one per AZ), 1 tainted `loadgen`, 1 `utility`
 - **EKS full** (`eksctl-cluster-full.yaml`) — 10 workers: 9 Cassandra (3 per AZ), 1 tainted `loadgen`
 - **Cassandra ring** (datacenter: `dc1`) with three racks under cass-operator's default hard pod anti-affinity — one pod per node. On EKS racks map to AZs; **on OpenShift they map to nodes** via a synthetic `k8ssandra.io/rack` label, because that cluster has no `topology.kubernetes.io/zone` labels at all
-- **Reaper** (repairs), **Medusa** (backups — AWS S3 via IRSA on EKS, in-cluster NooBaa via ObjectBucketClaim on OpenShift), and **kube-prometheus-stack** (Prometheus + Grafana) deployed alongside
+- **Reaper** (repairs), **Medusa** (backups — AWS S3 via IRSA on EKS, in-cluster **MinIO on Ceph RBD** on OpenShift), and **kube-prometheus-stack** (Prometheus + Grafana) deployed alongside
 - **k8ssandra-operator** installed to `default` namespace (required for webhook alignment)
 - **easy-cass-mcp** deployed in-cluster. On EKS: internet-facing NLB on port 8000. **On OpenShift: a Route with edge TLS** — LoadBalancer services never provision on that cluster
 - **cert-manager** handles TLS for operator webhooks
@@ -40,8 +40,8 @@ manifests/
   cassandra/medusa-backup-job.yaml      # On-demand MedusaBackupJob (full)
   monitoring/values-*.yaml              # kube-prometheus-stack Helm values (EKS)
   openshift/node-labels.sh              # Label + taint the 5 OpenShift workers (racks live here)
-  openshift/k8ssandra-cluster.yaml      # OPENSHIFT CR — size 3, node-racks, Ceph RBD, NooBaa S3
-  openshift/medusa-obc.yaml             # ObjectBucketClaim — NooBaa bucket for Medusa
+  openshift/k8ssandra-cluster.yaml      # OPENSHIFT CR — size 3, node-racks, Ceph RBD, MinIO S3
+  openshift/minio.yaml                  # MinIO — Medusa's S3 endpoint (NOT NooBaa; see below)
   openshift/easy-cass-mcp-service.yaml  # ClusterIP (no LoadBalancer on this cluster)
   openshift/routes.yaml                 # Routes: easy-cass-mcp, Reaper, Grafana
   openshift/values-*.yaml               # kube-prometheus-stack Helm values (OpenShift)
@@ -91,8 +91,17 @@ docs/
 - **LoadBalancer services never provision** (ODF's own `s3`/`sts` have been `<pending>` since
   the cluster was built) — use Routes
 - Storage is **Ceph RBD via ODF** (`ocs-storagecluster-ceph-rbd`); there is no iops/throughput knob
-- Medusa backs up to **NooBaa** (in-cluster S3) via an ObjectBucketClaim — no AWS, no IRSA.
-  The OBC's secret is AWS_*-style; Medusa needs INI-format `credentials`, so deploy-openshift.sh translates it
+- Medusa backs up to **MinIO** (in-cluster S3, on a Ceph RBD PVC) — no AWS, no IRSA.
+  `deploy-openshift.sh` deploys it, creates the bucket with `mc`, and writes
+  `medusa-minio-key` in INI format (Medusa wants a `credentials` key, not AWS_* env vars)
+- **Do NOT use NooBaa / an ObjectBucketClaim here, even though ODF offers one.** Its
+  pv-pool agent pods are pinned at 100m CPU / 400Mi by the NooBaa operator, no CRD
+  exposes that limit, and they are OOMKilled ~75s into a full backup of a loaded ring.
+  Measured 21 Sep: three mitigations (numVolumes 1→3, concurrentTransfers 4→1,
+  transferMaxBandwidth 150→10MB/s) all failed. This cluster's ODF is external-mode
+  with no Ceph RGW, so MinIO is the only workable in-cluster S3. See docs/TROUBLESHOOTING.md
+- **Changing `spec.medusa.storageProperties` rolls the entire ring.** Wait for
+  `Updating=False` before starting a backup, or it races pods being recreated
 - **metrics-server is not installed** — OpenShift already serves `metrics.k8s.io`
 - kube-prometheus-stack **must** be installed with `--skip-crds`: the monitoring.coreos.com CRDs
   are owned by the cluster-version-operator. Our operator is scoped to `default` + `monitoring`
@@ -176,3 +185,7 @@ Scripts accept configuration via environment variables:
 16. No CassandraDatacenter/pods/PVCs appear at all → a webhook rejected it; the reason is on the PARENT resource (`kubectl get k8ssandracluster demo -o jsonpath='{.status.error}'`), not on the CassandraDatacenter, which was never created
 17. Disk grows but `nodetool status` Load does not → `auto_snapshot` defaults to TRUE and fires on DROP *and* TRUNCATE, pinning every sstable. `nodetool listsnapshots` prints the snapshot but EXCLUDES it from its own "Total TrueDiskSpaceUsed" once the keyspace is gone from the schema — read the rows, not the total. `nodetool clearsnapshot --all` (tag differs per node); all three CRs now set `auto_snapshot: false`
 18. "multiple nodes per worker without cpu and memory requests and limits" → `softPodAntiAffinity: true` requires BOTH cpu and memory requests AND limits. It is mutually exclusive with omitting the CPU limit (the CFS-throttling fix). Set a limit high enough not to bind, or drop the co-location
+19. (OpenShift) Medusa backup fails on every node with `InvalidBucketState` → NooBaa's pv-pool agents OOMKilled by the upload. Not credentials, not the bucket. Use MinIO (`manifests/openshift/minio.yaml`); the limit is not tunable. See docs/TROUBLESHOOTING.md
+20. Medusa fails with "Backup `<name>` already exists" → backup metadata lives in the BUCKET, not Kubernetes. Deleting the MedusaBackupJob does not free the name; use a new one
+21. Backup fails with `ConnectionRefusedError` on 9042 right after a CR edit → changing `spec.medusa.storageProperties` rolls the whole ring. Wait for `Updating=False` before starting a backup
+22. (OpenShift) `kubectl apply -f manifests/openshift/k8ssandra-cluster.yaml` mid-workshop SCALES THE RING DOWN → the manifest says `size: 3` because Part 6 scales to 6 live. Patch the specific field instead of applying the whole CR
