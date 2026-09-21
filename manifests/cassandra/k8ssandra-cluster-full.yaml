@@ -54,11 +54,34 @@ spec:
         # its own.)
         containers:
           - name: server-system-logger
+            # This sidecar is Vector, and its whole job is to tail ONE file
+            # (/var/log/cassandra/system.log, a few hundred KB) and echo it to
+            # stdout so `kubectl logs` works.
+            #
+            # Vector sizes its worker pool from the CPU count it can see. This
+            # container has no CPU limit, so it sees the whole node -- 32 cores
+            # -- and starts ~34 threads. The memory cost is per-thread allocator
+            # arenas, NOT buffered log data: nothing is backing up, and the
+            # working set is flat (measured +0.2 MiB over four days).
+            #
+            # MEASURED on this cluster, identical image, idle:
+            #   stock              34 threads   157 MiB
+            #   VECTOR_THREADS=2    4 threads    33 MiB
+            #
+            # That is why 128Mi OOMKilled during the 3->6 scale-up: Vector's
+            # normal floor was already ABOVE the limit. It was not a burst and
+            # not a leak, so raising the ceiling was treating the symptom.
+            # Capping the thread count fixes the cause, and 128Mi is then real
+            # headroom over an ~80 MiB steady state rather than a ceiling to
+            # creep towards.
+            env:
+              - name: VECTOR_THREADS
+                value: "2"
             resources:
               requests:
-                memory: 128Mi
+                memory: 64Mi
               limits:
-                memory: 256Mi
+                memory: 128Mi
         # storageConfig is IMMUTABLE on an existing CassandraDatacenter. If you
         # ever need to resize these PVCs, add this annotation to the datacenter
         # metadata above FIRST:
