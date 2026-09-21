@@ -4,9 +4,20 @@
       "command": "npx",
       "args": [
         "mcp-remote",
-        "http://ac14b093abe8d42af85ef924753b186a-671196048.us-east-1.elb.amazonaws.com:8000/mcp/",
-        "--allow-http"
+        "https://easy-cass-mcp-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com/mcp/"
       ]
+    },
+    "grafana": {
+      "command": "/Users/james.colvin/.local/bin/mcp-grafana",
+      "args": [
+        "--disable-write",
+        "--enabled-tools",
+        "search,datasource,prometheus,dashboard,navigation"
+      ],
+      "env": {
+        "GRAFANA_URL": "https://grafana-monitoring.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com",
+        "GRAFANA_SERVICE_ACCOUNT_TOKEN_FILE": "/Users/james.colvin/Documents/k8ssandra-mcp-workshop/.grafana-mcp-token"
+      }
     }
   }
 }

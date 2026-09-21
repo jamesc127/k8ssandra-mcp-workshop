@@ -17,3 +17,6 @@ vm_ssh_key*
 *.pem
 *.key
 id_rsa*
+
+# Grafana MCP service-account token (read-only Viewer). Never commit.
+.grafana-mcp-token
