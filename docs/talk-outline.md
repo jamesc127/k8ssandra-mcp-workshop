@@ -63,7 +63,7 @@ logged in before you go live.
 | What | URL |
 |---|---|
 | **Grafana** | https://grafana-monitoring.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com |
-| **Reaper** | https://reaper-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com |
+| **Reaper** | https://reaper-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com/webui/ |
 | **easy-cass-mcp** | https://easy-cass-mcp-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com/mcp/ |
 | **OpenShift console** | https://console-openshift-console.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com |
 
@@ -294,7 +294,7 @@ throughput, p99 read and write latency, pending compactions, per-pod CPU, disk u
 
 ### 5b. Reaper (~4 min)
 
-The [Reaper Route](https://reaper-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com)
+The [Reaper Route](https://reaper-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com/webui/)
 is already open in a tab — go to it. (No port-forward to babysit on OpenShift; that is
 one fewer thing to fail live.)
 

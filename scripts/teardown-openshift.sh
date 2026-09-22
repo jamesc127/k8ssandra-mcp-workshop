@@ -60,7 +60,7 @@ echo ">>> Deleting MinIO and the Medusa bucket..."
 kubectl delete deployment minio -n "$NAMESPACE" --ignore-not-found
 kubectl delete service minio -n "$NAMESPACE" --ignore-not-found
 kubectl delete pvc minio-data -n "$NAMESPACE" --ignore-not-found
-kubectl delete secret medusa-minio-key minio-root -n "$NAMESPACE" --ignore-not-found
+kubectl delete secret medusa-minio-key minio-root reaper-jwt reaper-ui -n "$NAMESPACE" --ignore-not-found
 
 echo ""
 echo ">>> Uninstalling k8ssandra-operator..."

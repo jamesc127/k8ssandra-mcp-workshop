@@ -268,6 +268,26 @@ spec:
         memory: "3Gi"
       limits:
         memory: "4Gi"
+    # The Reaper image hardcodes `sessionTimeout: PT10M` with no env var for it,
+    # and that is also the JWT lifetime. The web UI polls with its stored token
+    # and shows "no cluster" on the resulting 401 instead of returning to the
+    # login page, so a tab opened at T-25 is blank by Part 5b. Reaper is a
+    # Dropwizard app, so a -Ddw.* system property overrides any config key.
+    # JWT_SECRET replaces the default key published in the image's own config;
+    # deploy-openshift.sh generates it.
+    # Same login as Grafana, so there is one credential to remember on stage.
+    # deploy-openshift.sh copies it from the kps-grafana secret. The operator's
+    # own demo-reaper-ui secret cannot be edited: it is hash-managed and reverts.
+    uiUserSecretRef:
+      name: reaper-ui
+    additionalEnvVars:
+      - name: JAVA_OPTS
+        value: "-Ddw.accessControl.sessionTimeout=PT3H"
+      - name: JWT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: reaper-jwt
+            key: secret
     telemetry:
       prometheus:
         enabled: true
