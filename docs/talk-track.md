@@ -107,10 +107,29 @@ have been looking at the shortfall for half an hour. Call it as the last node jo
 > _"That's the number I asked you to hold. We were twelve percent short because three
 > pods were pinned against a CPU limit. Same limit — twice the pods."_
 
-⚠️ **UNVERIFIED on the corrected dataset.** Size 6 has never been measured since the
-data model was fixed. The reasoning is sound — per-pod CPU roughly halves, throttling
-should mostly vanish — but if it lands at 57k rather than 60k, say the real number and
-keep the shape of the point. Do not promise a figure you have not seen.
+✅ **VERIFIED 22 Sep on the corrected dataset.** The gap does not just close — it
+overshoots:
+
+| | size 3 | size 6 |
+|---|---|---|
+| Throughput | 52,500 | **65,000+** |
+| p99 read | 39 ms | **14.5 ms** |
+| p99 write | 20 ms | **7.9 ms** |
+| Container CPU | 9.7 – 13.7 of 14 | **6.3 – 8.9** |
+| Throttled periods | **27 – 88%** | **0.2 – 2.0%** |
+| Errors | 0 | **0** |
+| Time to 6/6 UN | — | **9 min 04 s** |
+
+**Narrate the overshoot — it is real and it looks great.** NoSQLBench has been running
+~13% behind its 60k ask for an hour, so when capacity arrives it bursts to ~66k to
+clear the backlog before settling back to the 60k rate limit. The throughput line
+visibly jumps *past* the target and then flattens onto it.
+
+> _"It's not just hitting sixty thousand now — it's running ahead to make up what it
+> couldn't do for the last hour. Watch it settle back onto the target."_
+
+Be precise if asked: **60k is the rate limit, not the ceiling.** The overshoot is
+catch-up. What was measured is that the ceiling is no longer below the ask.
 
 Material to fill ~6 minutes:
 - Each rack 1 → 2; `size` must be a multiple of 3

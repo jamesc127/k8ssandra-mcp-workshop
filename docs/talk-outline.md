@@ -143,6 +143,12 @@ write, an 85/15 mix, zero errors).
 >
 > A flat line that meets a lowered target demos nothing. A shortfall you diagnose and
 > then fix with capacity is the whole talk in one number.
+>
+> ✅ **Verified 22 Sep — the payoff is real.** Scaling to 6 on the corrected dataset:
+> throughput **52.5k → 65k+**, p99 read **39 ms → 14.5 ms**, CFS throttling
+> **27–88% → 0.2–2.0%**, zero errors, **9 min 04 s** to 6/6 UN. The overshoot past 60k
+> is NoSQLBench clearing an hour of accumulated backlog before settling onto the rate
+> limit — narrate it, it looks excellent on the graph.
 
 > _"Everything you're about to see is live. It's been running for an hour, it's
 > under load right now, and I'm not going to stop it for the rest of the talk."_
