@@ -13,6 +13,20 @@
 > the measured durations, what to say while each one runs, and the failure playbook.
 > This document is the design: why each segment exists and what was measured to get
 > there. Keep the track on your second screen; read this one beforehand.
+>
+> ⚠️ **The track was simplified on 22 Sep and is now authoritative on sequencing.** It
+> runs **five** live demos — backup, scale, MCP, node kill, skills — against a load test
+> that is simply always there. The Part numbering and time budget below still describe
+> the older, busier structure and have NOT been reconciled. Where the two disagree,
+> **the track wins.** Specifically, these are no longer live demo segments:
+> - **Reaper** — the repair runs in the background from before the talk and is used as
+>   one line during the node kill ("the repair didn't even notice"). It is not a beat.
+> - **Monitoring / ServiceMonitor** — folded into the k8ssandra section as "four lines
+>   of `telemetry:` produced all of this", shown on Grafana rather than demoed.
+> - **The live CRD map query** — a slide, not a live call.
+>
+> That buys the k8ssandra explainer **14 minutes** instead of 12, which is the segment
+> the event was actually sold on.
 
 > **Everything on this outline is driven from Claude Code in natural language.** There is
 > no terminal typing in this talk. Claude is connected to two things at once: the

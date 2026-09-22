@@ -138,8 +138,18 @@ docs/
   nb5 are `ToDate`, `ToDateTime`, `ToJavaInstant`, `ToEpochMillis`. Build bucket labels with
   integer division (`Div`/`Mul`/`Add`/`Prefix`), not date formatting
 - **Derive related fields from the same binding chain.** A timestamp and the bucket it
-  belongs to must start from the same `AddHashRange(...)`, or rows land in buckets that
+  belongs to must start from the same `HashRange(...)`, or rows land in buckets that
   contradict their own timestamps
+- **`HashRange(min,max)`, NOT `AddHashRange(min,max)`.** `AddHashRange` ADDS a hashed
+  value to the input rather than mapping the input into the range, so its output grows
+  with the cycle number. At cycle 0 the two are indistinguishable — which is how this
+  shipped. Measured 22 Sep at 50M cycles with `AddHashRange`: timestamps in the year
+  22,384 (which also throws "date value out of range" in the Python driver and DEFUNCTS
+  the connection, so any MCP query selecting the column kills its own session), and
+  35.5M partitions averaging 1.4 rows instead of 588k averaging ~83. Every "range scan"
+  in the read workload was really a point read. **When you test bindings with
+  `driver=stdout`, test at a HIGH cycle number** (`cycles=49999990..49999996 stride=1`),
+  not just the first few
 - **cqld4 cannot PREPARE a multi-statement `BATCH`** — it fails with "Cache computation
   failed". Use the `simple:` op type (unprepared). Note `prepared: false` alongside `stmt:`
   is rejected as an ambiguous op template; the op type IS the key
@@ -156,8 +166,21 @@ docs/
   eventual-consistency guarantee, not a performance optimization — it costs a batchlog write
   and prepared-statement reuse
 - **Dataset is bounded by cycle count, not runtime.** `txn_id` is `ToHashedUUID()` of a
-  bounded cycle, so re-running overwrites the same rows. Sizing is MEASURED: 222.7 MB per
-  1M transactions per node, so 50M transactions ≈ 11.1 GB/node
+  bounded cycle, so re-running overwrites the same rows. Sizing is MEASURED on the
+  corrected data model (22 Sep): **9.8 GB/node for 50M transactions**, i.e. ~196 MB per
+  1M per node at RF=3 on a 3-node ring. The pre-22-Sep figure of 222.7 MB/1M was taken
+  when partitions held 1.4 rows and compressed far worse
+- **The PREPARE job is bounded; the LOAD job is not.** `nosqlbench-payments-prepare-job`
+  writes exactly its cycle count (50M). `nosqlbench-payments-job` runs 216M cycles
+  against that same binding space, so its 15% writes land partly OUTSIDE the loaded
+  range and slowly add rows. Measured over one 64-minute run: 9.5 → 9.8 GB/node,
+  588k → 673k partitions. Not a problem at talk timescales, but do not call the
+  sustained load "bounded"
+- **Zipfian skew makes bucket granularity matter.** `card_id` is `Zipf(100000,1.1)` over
+  only 6 monthly buckets, so the hottest card's partition reaches **71.5 MB** — well past
+  the 10 MB guideline — while the mean is 4.3 KB. The merchant table buckets DAILY (180
+  buckets) and tops out at 2.2 MB. Same rule, different answer, and the card side is
+  arguably under-bucketed
 
 ## Deployment Parameters
 
