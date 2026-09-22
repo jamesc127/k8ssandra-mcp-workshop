@@ -1,0 +1,59 @@
+diff --git a/ecm/cassandra_table.py b/ecm/cassandra_table.py
+index fe6b39f..713e2a4 100644
+--- a/ecm/cassandra_table.py
++++ b/ecm/cassandra_table.py
+@@ -1,4 +1,5 @@
+ import logging
++from collections.abc import Mapping
+ from typing import Any, Dict, Optional
+ 
+ from cassandra.cluster import Session
+@@ -59,7 +60,9 @@ class CassandraTable:
+         # Extract compaction info from options
+         compaction_options = metadata.options.get("compaction", {})
+ 
+-        if isinstance(compaction_options, dict):
++        # The driver returns CQL maps as OrderedMapSerializedKey, which is a
++        # Mapping but not a dict - so check against Mapping.
++        if isinstance(compaction_options, Mapping):
+             strategy_class = compaction_options.get(
+                 "class", "SizeTieredCompactionStrategy"
+             )
+diff --git a/tests/unit/test_cassandra_table.py b/tests/unit/test_cassandra_table.py
+index 04b10d0..b7fc66d 100644
+--- a/tests/unit/test_cassandra_table.py
++++ b/tests/unit/test_cassandra_table.py
+@@ -84,6 +84,33 @@ class TestCassandraTable:
+             assert strategy["options"]["max_threshold"] == "32"
+             assert strategy["options"]["min_threshold"] == "4"
+ 
++    @pytest.mark.asyncio
++    async def test_get_compaction_strategy_driver_map_type(self, table):
++        """Real driver metadata returns OrderedMapSerializedKey, not dict.
++
++        Regression: a dict-only isinstance check made every table look like
++        STCS, so UCS tables were told to switch to UCS.
++        """
++        from cassandra.cqltypes import UTF8Type
++        from cassandra.util import OrderedMapSerializedKey
++
++        compaction = OrderedMapSerializedKey(UTF8Type, 5)
++        for k, v in {
++            "class": "org.apache.cassandra.db.compaction.UnifiedCompactionStrategy",
++            "scaling_parameters": "T4",
++        }.items():
++            compaction._insert_unchecked(k, UTF8Type.serialize(k, 5), v)
++        assert not isinstance(compaction, dict)
++
++        mock_metadata = Mock()
++        mock_metadata.options = {"compaction": compaction}
++
++        with patch.object(table, "_get_metadata", return_value=mock_metadata):
++            strategy = await table.get_compaction_strategy()
++
++            assert strategy["class"] == "UnifiedCompactionStrategy"
++            assert strategy["options"]["scaling_parameters"] == "T4"
++
+     @pytest.mark.asyncio
+     async def test_get_compaction_strategy_lcs(self, table):
+         """Test getting LCS compaction strategy."""

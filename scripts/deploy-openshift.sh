@@ -332,6 +332,32 @@ kubectl apply -f "$OCP_DIR/routes.yaml"
 kubectl wait --for=condition=available deployment/easy-cass-mcp \
   -n "$NAMESPACE" --timeout=180s 2>/dev/null || echo "    (Deployment still progressing)"
 
+# ---------------------------------------------------------------------------
+# easy-cass-mcp hot-patch.
+#
+# The published image's get_compaction_strategy() tests `isinstance(opts, dict)`,
+# but the Python driver hands back CQL maps as OrderedMapSerializedKey -- a
+# Mapping, NOT a dict. The test therefore fails for every table, every table is
+# reported as SizeTieredCompactionStrategy, and analyze_table_optimizations
+# cheerfully advises UCS tables to "switch to UCS".
+#
+# That tool is demoed in the talk, and the failure is silent: confident, wrong
+# advice rather than an error. So the patch is applied on every deploy, not by
+# hand afterwards. patches/easy-cass-mcp/apply.sh mounts a corrected
+# cassandra_table.py over the image's copy via ConfigMap; it is idempotent and
+# has a `rollback` mode.
+# ---------------------------------------------------------------------------
+ECM_PATCH="$SCRIPT_DIR/../patches/easy-cass-mcp/apply.sh"
+if [ -x "$ECM_PATCH" ]; then
+  echo "    Applying easy-cass-mcp compaction-strategy patch..."
+  "$ECM_PATCH" >/dev/null 2>&1 \
+    && echo "    Patch applied." \
+    || echo "    WARNING: easy-cass-mcp patch FAILED. analyze_table_optimizations will report every table as STCS."
+else
+  echo "    WARNING: $ECM_PATCH not found or not executable — skipping."
+  echo "             analyze_table_optimizations will report every table as STCS."
+fi
+
 # easy-cass-mcp often starts before the superuser secret is usable and then sits
 # there logging "Bad credentials". Restarting once is cheaper than debugging it.
 echo "    Restarting easy-cass-mcp to pick up superuser credentials..."
