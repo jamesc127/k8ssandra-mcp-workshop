@@ -134,12 +134,15 @@ Then switch to the Grafana tab, already showing an hour of history at
 **~52,500 ops/sec** (measured 22 Sep on the corrected dataset: 44,648 read + 7,879
 write, an 85/15 mix, zero errors).
 
-> ⚠️ **Decide the cyclerate before the day.** The job asks for 60k and the cluster
-> sustains ~52.5k, because it is CPU-pegged at the 14-core limit. A graph that sits
-> 13% under its own target looks like a miss even though nothing is failing. Either
-> **lower `cyclerate` to 50000** so the line is flat and "target held" is true, or keep
-> 60k and say the number out loud as a constraint. The runbook's T-40 step exists for
-> exactly this choice.
+> 🎯 **Decided 22 Sep: `cyclerate` stays at 60000.** The cluster sustains ~52.5k
+> because it is CPU-pegged at the 14-core limit, so the graph sits ~13% under its own
+> target. **That gap is the point, not a blemish.** Name it in Part 0 — "we're asking
+> for 60k, getting 52.5k, and nothing is failing" — and it becomes the setup that Part 6
+> pays off when doubling the ring closes it, and that Part 8 explains when `/diagnose`
+> finds the cgroup ceiling.
+>
+> A flat line that meets a lowered target demos nothing. A shortfall you diagnose and
+> then fix with capacity is the whole talk in one number.
 
 > _"Everything you're about to see is live. It's been running for an hour, it's
 > under load right now, and I'm not going to stop it for the rest of the talk."_

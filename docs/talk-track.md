@@ -45,10 +45,21 @@ cannot force-kill a node mid-bootstrap, so the kill waits until 6/6 UN.
 Point at: 3 Cassandra pods across 3 racks · a **medusa sidecar inside each one** ·
 Reaper · easy-cass-mcp · Prometheus and Grafana in `monitoring`.
 
-Grafana tab — **~52,500 ops/sec**, an hour of history, **zero errors**.
+Grafana tab — **~52,500 ops/sec against a 60,000 ask**, an hour of history,
+**zero errors**.
 
 > _"Everything you're about to see is live. It's been running for an hour, it's under
 > load right now, and I'm not going to stop it for the rest of the talk."_
+
+🎯 **Name the gap here. It is deliberate, and it is the setup for Beat 2.**
+
+> _"We're asking this cluster for sixty thousand operations a second and it's giving me
+> about fifty-two and a half. Nothing is failing — zero errors, zero timeouts. It just
+> can't go any faster. Hold that number."_
+
+`cyclerate` stays at **60000** on purpose. A flat line that meets a lowered target
+demos nothing. A visible shortfall you then close by adding capacity is the whole talk
+in one number — Beat 2 closes it, Beat 5 explains why it was there.
 
 ---
 
@@ -88,6 +99,18 @@ real Kubernetes trap, made visible for free.
 > and whether throughput dipped."_
 
 ⚠️ **9 min 20 s**, so it finishes *during* the MCP segment. That is intentional.
+
+🎯 **The payoff: the gap from the cold open closes.** You opened saying the cluster
+wanted 60k and gave 52.5k. Doubling the ring is the answer to exactly that, and they
+have been looking at the shortfall for half an hour. Call it as the last node joins:
+
+> _"That's the number I asked you to hold. We were twelve percent short because three
+> pods were pinned against a CPU limit. Same limit — twice the pods."_
+
+⚠️ **UNVERIFIED on the corrected dataset.** Size 6 has never been measured since the
+data model was fixed. The reasoning is sound — per-pod CPU roughly halves, throttling
+should mostly vanish — but if it lands at 57k rather than 60k, say the real number and
+keep the shape of the point. Do not promise a figure you have not seen.
 
 Material to fill ~6 minutes:
 - Each rack 1 → 2; `size` must be a multiple of 3
