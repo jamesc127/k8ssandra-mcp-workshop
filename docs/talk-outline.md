@@ -117,8 +117,15 @@ Point at what is on screen, in this order:
 - One `utility` node carrying Prometheus, Grafana, Reaper and the operators
 
 Then switch to the Grafana tab, already showing an hour of history at
-**~60,000 ops/sec** (measured 21 Sep: 50,997 read + 9,000 write = 59,997, an 85/15 mix
-against a 60k target).
+**~52,500 ops/sec** (measured 22 Sep on the corrected dataset: 44,648 read + 7,879
+write, an 85/15 mix, zero errors).
+
+> ⚠️ **Decide the cyclerate before the day.** The job asks for 60k and the cluster
+> sustains ~52.5k, because it is CPU-pegged at the 14-core limit. A graph that sits
+> 13% under its own target looks like a miss even though nothing is failing. Either
+> **lower `cyclerate` to 50000** so the line is flat and "target held" is true, or keep
+> 60k and say the number out loud as a constraint. The runbook's T-40 step exists for
+> exactly this choice.
 
 > _"Everything you're about to see is live. It's been running for an hour, it's
 > under load right now, and I'm not going to stop it for the rest of the talk."_
@@ -417,6 +424,12 @@ estimates:
 | NoSQLBench errors | **0** |
 | Ownership | 100% -> 51.5% / 48.5% |
 
+> ⚠️ **The throughput figures in this table are from BEFORE 22 Sep**, i.e. from the
+> dataset whose partitions held 1.4 rows. The **timings and the dip percentages are
+> still good** — they are ring and streaming mechanics, not query mechanics — but do
+> not quote the absolute ops/sec from here alongside the corrected numbers elsewhere.
+> Tomorrow's run-through re-measures them.
+
 The best visual is a `nodetool status` taken mid-scale, when the racks have not
 yet caught up with each other:
 
@@ -535,6 +548,12 @@ while 60,014 ops/sec were flowing:
 | `failures` | **0** |
 | `timeouts` | **1**, over 10 minutes and ~36M operations |
 
+> ⚠️ **The throughput figures in this table are from BEFORE 22 Sep**, i.e. from the
+> dataset whose partitions held 1.4 rows. The **timings and the dip percentages are
+> still good** — they are ring and streaming mechanics, not query mechanics — but do
+> not quote the absolute ops/sec from here alongside the corrected numbers elsewhere.
+> Tomorrow's run-through re-measures them.
+
 Quote the 1, not "zero" - it is a more credible number and it is the truth.
 
 **Two details worth showing, because they are the actual mechanism:**
@@ -588,8 +607,9 @@ codified once, applied every time.
 
 ### The callback — what the skills found last time, and what we did about it
 
-**This is the strongest ~3 minutes in the talk. It needs both numbers, so capture
-the "before" at rehearsal before raising the limits.**
+**This is the strongest ~3 minutes in the talk — and after the 22 Sep rework it
+mutates nothing on the cluster.** Three Grafana panels, one skill invocation, and a
+decision. It is now the segment least likely to fail on camera.
 
 Last run, `/diagnose` fanned out via `query_all_nodes` against `system_views.*` and
 compared all 9 nodes. The headline find:
@@ -627,27 +647,37 @@ the table-level setting is silently meaningless without the YAML setting.
 During rehearsal this cluster produced a second failure that pairs with the first
 almost too neatly.
 
-**Failure 1 — Cassandra cannot see its own ceiling.** Throttling is real. Measured
-under load on **17 Sep at ring size 3** (corrected — see the note below):
+**Failure 1 — Cassandra cannot see its own ceiling.** Measured **22 Sep**, ring size 3,
+under the 60k load, on the corrected dataset:
 
-| | Ring size 3 (17 Sep) | Ring size 6 (21 Sep) |
+| | Measured | |
 |---|---|---|
-| Cassandra container CPU | **6.7 – 8.8 cores** | 3.4 – 4.0 cores |
-| Configured limit | **14** | 14 |
-| Utilisation of quota | ~48 – 63 % | ~25 % |
-| CFS periods throttled | **peaks at 6.7 %** | 0.5 – 1.0 % |
-| Worker node CPU | 24 – 36 % | ~20 % |
+| Cassandra container CPU | **9.7 – 13.7 cores** | of a **14** limit |
+| Utilisation of quota | **69 – 98 %** | |
+| CFS periods throttled | **27 – 88 %** | |
+| Worker node CPU | **~20 %** | the host is bored |
+| p99 read / write | 39 ms / 20 ms | |
+| Client-visible errors | **0** | |
 
-`nodetool tpstats` is clean, thread-pool queues are shallow. From inside Cassandra
-nothing is wrong — the ceiling is a cgroup quota, visible only in cAdvisor, via a
-*second* Grafana datasource pointed at OpenShift's Thanos.
+`nodetool tpstats` is clean, thread-pool queues are shallow, and NoSQLBench reports
+zero timeouts, unavailables or failures. From inside Cassandra **nothing is wrong** —
+the ceiling is a cgroup quota, visible only in cAdvisor, via a *second* Grafana
+datasource pointed at OpenShift's Thanos.
 
-**The sharper version of this point.** The pod is throttled while sitting at roughly
-**60% of its CPU quota on average**. That is not a contradiction: CFS accounts in
-100 ms periods, so a burst — compaction, a GC pause, a flush — can exhaust a 1.4 s
-slice inside a single period and get parked, while the 5-minute average looks
-comfortable. *"We were only at 60% and still being throttled"* is a better teaching
-moment than *"we hit the limit"*, and it is the one that is actually true here.
+**That is the whole point in one row of the table.** The pod is being held down 88% of
+the time while the worker it sits on is 80% idle, and every signal Cassandra exposes
+says healthy. No amount of `nodetool` gets you there.
+
+**What fixing it would buy, measured not guessed** (limit raised to 24, then reverted):
+
+| | limit 14 | limit 24 |
+|---|---|---|
+| CFS periods throttled | 77 – 96 % | **0.2 – 0.3 %** |
+| p99 read | 26.8 ms | **15.5 ms** |
+| p99 write | 20.0 ms | **8.2 ms** |
+
+Throttling essentially vanishes and p99 read halves. **This is evidence, not a demo** —
+see the note under "Run it live" for why it is no longer performed on stage.
 
 > **Correction, 21 Sep.** This table previously read 11.9 – 14.6 cores against a
 > limit of 14 — i.e. pods pegged at the ceiling. That number was wrong, and the
@@ -664,6 +694,20 @@ moment than *"we hit the limit"*, and it is the one that is actually true here.
 > Worth 30 seconds on stage if you want it: the observability layer was itself the
 > thing lying, and it took a third source to catch it. That is the same lesson as
 > the rest of Part 8, one level up.
+>
+> **Second correction, 22 Sep — and this one is more uncomfortable.** The numbers above
+> were then measured *again* and moved *again*, because the dataset underneath them was
+> wrong. The NoSQLBench workload used `AddHashRange` where it needed `HashRange`, which
+> ADDS the cycle instead of bounding it. Over 50M cycles that produced timestamps in
+> the year 22,384 and **35.5 million partitions averaging 1.4 rows each** — so every
+> "range scan" in the read workload was really a point read, and the cluster was barely
+> working. With the data model fixed (588k partitions, ~83 rows each) the same cluster
+> is CPU-pegged at 69–98% of quota.
+>
+> So: the 21 Sep correction was right about the dashboard and right for the data that
+> existed then. The data changed. **If you tell the dashboard story on stage, tell this
+> half too** — "I corrected the number, then the number moved again when I fixed the
+> thing generating it" is a better and more honest arc than a single clean catch.
 
 **Failure 2 — Kubernetes cannot see a dead node.** The disks filled. Two of three
 nodes shut down. And:
@@ -690,16 +734,44 @@ reach. Neither `nodetool` alone nor `kubectl` alone gets you there.
 
 ### Run it live
 
-1. Grafana **"CFS throttling (% of periods)"** — non-zero.
-2. **"Worker node CPU utilisation"** — twenty-something percent.
-3. Cassandra's **thread pool pending tasks** — shallow.
+1. Grafana **"CFS throttling (% of periods)"** — and it is not subtle.
+2. **"Worker node CPU utilisation"** — twenty-something percent. The host is bored.
+3. Cassandra's **thread pool pending tasks** — shallow. Nothing is queuing.
 4. Ask Claude `/diagnose`. Three signals that each look fine alone and only mean
    something together, which is exactly the reasoning a skill encodes.
-5. Raise the limit live — _"Raise the Cassandra container CPU limit on the `demo` cluster
-   from 14 to 24 cores and roll it out"_ — and watch panel 8 go to zero.
 
 Then put `kubectl get pods` beside `nodetool status` from the rehearsal
 screenshots. The two-layer point lands in about fifteen seconds.
+
+**Then land it as a decision, not a fix:**
+
+> _"The skill is telling me I'm leaving throughput on the floor. I know. That limit is
+> sized for two pods per worker after the scale-up, and I'd rather show you a
+> constrained cluster honestly than a tuned one. I measured what fixing it buys —
+> throttling goes to 0.3%, p99 read halves — and I'm choosing not to."_
+
+> **Why there is no "raise the limit live" step any more (removed 22 Sep).**
+> There used to be a step 5 that raised the CPU limit on stage. It is gone, for three
+> reasons, and the timing one is the least important:
+>
+> 1. **It contradicted this very segment.** The table above says the throttling is
+>    *"deliberately left in place"*, and the closing quote says *"I'm choosing to live
+>    with two."* Spending three minutes justifying a constraint and then undoing it on
+>    camera cannot be the point.
+> 2. **It is off-thesis.** This talk is k8ssandra, MCP and skills. Tuning a Kubernetes
+>    CPU limit is none of those. The *diagnosis* is on-thesis — correlating three
+>    signals no single layer exposes. The remediation is ordinary ops work that needs
+>    no agent, and showing it invites "so this is a resource-limits talk?"
+> 3. **Part 8 already has its action half** — five concrete repo changes came out of
+>    these skills. It does not need a sixth, performed live.
+>
+> Also, it could not have worked: a CR edit triggers a rolling restart, **measured at
+> 9.1–9.7 minutes** at ring size 3 across three separate runs on 22 Sep. Part 8 is
+> eight minutes. You would have started it and run out of talk.
+>
+> Keeping the *measurement* and dropping the *action* makes the point stronger, not
+> weaker: a tool whose advice you can knowingly decline is more credible than one you
+> always obey.
 
 ### What got fixed because of it
 
@@ -717,9 +789,10 @@ supervised process; it took a live outage to make me go and look.
 **Be straight about the constraint.** The 14-core limit is sized for two pods per
 worker after the scale-up. At ring size 3 each pod has a whole ~31.5-core worker to
 itself, so the quota binds a pod that could otherwise spread out — and it measurably
-did: 6.7% of CFS periods throttled on 17 Sep while the worker sat at 24–36% idle
-capacity. Any throughput number from this cluster comes from a deliberately
-constrained one. Say so.
+does: **27–88% of CFS periods throttled while the worker sits ~80% idle.** Every
+throughput number from this cluster comes from a deliberately constrained one, and it
+costs roughly **13% of target throughput** (52.5k sustained against a 60k ask). Say so
+plainly; it is more interesting than a number with no story behind it.
 
 **And `softPodAntiAffinity` is still on**, because three workers cannot host a
 six-node ring any other way. `/expert` calls it "defensible only for

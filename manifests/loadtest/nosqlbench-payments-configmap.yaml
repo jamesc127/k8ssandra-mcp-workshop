@@ -40,10 +40,9 @@ data:
 
       # Transaction time, and the two buckets derived from it.
       #
-      # All three chains start from the SAME AddHashRange(0,4320), so for any
-      # given cycle the timestamp and both buckets agree - a row in month-bucket
-      # 5 really does have a September timestamp. Verified with the stdout
-      # driver: hour 4200 -> 2026-09-12, /720 -> M5, /24 -> D175.
+      # All three chains start from the SAME HashRange(0,4320), so for any given
+      # cycle the timestamp and both buckets agree - a row in month-bucket 5
+      # really does have a September timestamp.
       #
       # 4320 hours = 180 days at hourly resolution. Hourly (rather than daily)
       # keeps clustering values well spread inside each partition, so txn_at DESC
@@ -52,9 +51,38 @@ data:
       # NOTE: nb5 has no SimpleDateFormat/StartingEpochMillis binding. The date
       # functions that exist are ToDate/ToDateTime/ToJavaInstant/ToEpochMillis;
       # bucket labels are therefore built with integer division, not formatting.
-      txn_at:        AddHashRange(0,4320); Mul(3600000L); Add(1774051200000L); ToJavaInstant()
-      card_bucket:   AddHashRange(0,4320); Div(720L); ToString(); Prefix('2026-M')
-      mrch_bucket:   AddHashRange(0,4320); Div(24L); ToString(); Prefix('2026-D')
+      #
+      # !! THIS WAS AddHashRange AND THAT WAS A BUG. Read this before "tidying" it.
+      #
+      # AddHashRange(min,max) ADDS a hashed value in that range TO THE INPUT. It
+      # does not map the input into the range - that is HashRange(min,max). So the
+      # result grows with the cycle number:
+      #
+      #     cycle          AddHashRange(0,4320)   HashRange(0,4320)
+      #     0              2731                   2731
+      #     1,000,000      1,003,176              3,176
+      #
+      # At cycle 0 the two are indistinguishable, which is exactly why this
+      # survived review: the original comment said "verified with the stdout
+      # driver: hour 4200 -> 2026-09-12", and that verification was TRUE - at low
+      # cycle numbers. Over a 50M-cycle load it is wrong by seven orders of
+      # magnitude.
+      #
+      # MEASURED 22 Sep, with the AddHashRange version:
+      #     txn_at      644,219,388,000,000 ms  = year ~22,384 CE
+      #                 (also throws "date value out of range" in the Python
+      #                  driver and DEFUNCTS the connection, so any MCP query
+      #                  selecting txn_at kills its own session)
+      #     partitions  35,457,696 instead of ~600k
+      #     rows/part   ~1.4 instead of ~83
+      #     mean part   280 bytes instead of ~30 KB
+      #
+      # i.e. the whole "bound the partition" data model silently did not exist:
+      # every range scan was really a point read. If you test bindings with
+      # driver=stdout, TEST AT A HIGH CYCLE NUMBER, not just the first few.
+      txn_at:        HashRange(0,4320); Mul(3600000L); Add(1774051200000L); ToJavaInstant()
+      card_bucket:   HashRange(0,4320); Div(720L); ToString(); Prefix('2026-M')
+      mrch_bucket:   HashRange(0,4320); Div(24L); ToString(); Prefix('2026-D')
 
       # --- low-cardinality categorical fields: these are what make it compress ---
       merchant_cat:  WeightedStrings('GROCERY:25;RESTAURANT:20;FUEL:15;RETAIL:15;TRAVEL:8;UTILITIES:7;HEALTHCARE:5;ENTERTAINMENT:5')

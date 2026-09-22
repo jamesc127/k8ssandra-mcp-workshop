@@ -52,7 +52,10 @@ in Part 7 until the ring is 6/6 UN.** Check before you kill.
 
 > _"List the worker nodes with their workload and rack labels, and which are tainted."_
 
-Then Grafana tab — **~60,000 ops/sec**, an hour of history already on screen.
+Then Grafana tab — **~52,500 ops/sec**, an hour of history already on screen.
+(If you lowered `cyclerate` to 50k at T-40 as recommended, say "50k" and the line is
+flat. If you left it at 60k, say the shortfall out loud — the cluster is CPU-capped on
+purpose and that is Part 8's setup.)
 
 > _"Everything you're about to see is live. It's been running for an hour, it's under
 > load right now, and I'm not going to stop it for the rest of the talk."_
@@ -134,6 +137,12 @@ Then hand off the narration:
 | NoSQLBench errors | **0** |
 | Ownership | 100% → 51.5% / 48.5% |
 
+> ⚠️ **The throughput figures in this table are from BEFORE 22 Sep**, i.e. from the
+> dataset whose partitions held 1.4 rows. The **timings and the dip percentages are
+> still good** — they are ring and streaming mechanics, not query mechanics — but do
+> not quote the absolute ops/sec from here alongside the corrected numbers elsewhere.
+> Tomorrow's run-through re-measures them.
+
 ~6 minutes of material to fill:
 - Each rack 1 → 2; `size` must be a multiple of 3
 - **The compromise, said out loud:** three workers means two replicas per node. At
@@ -174,6 +183,12 @@ rolling-restart demo, not a failure demo, and the recovery time stops meaning an
 | `unavailables` / `failures` | **0** / **0** |
 | `timeouts` | **1**, over 10 min and ~36M ops |
 
+> ⚠️ **The throughput figures in this table are from BEFORE 22 Sep**, i.e. from the
+> dataset whose partitions held 1.4 rows. The **timings and the dip percentages are
+> still good** — they are ring and streaming mechanics, not query mechanics — but do
+> not quote the absolute ops/sec from here alongside the corrected numbers elsewhere.
+> Tomorrow's run-through re-measures them.
+
 **Quote the 1, not "zero".** More credible, and it's the truth.
 
 🌟 **The line that lands, measured 21 Sep:** the Reaper repair from Beat 2 is still
@@ -192,25 +207,40 @@ the new pod IP, backing off 8.7 → 14.9 → 21.9 → 30.9 s. Point at `unavaila
 
 ---
 
-## Beat 6 — Skills (49:00)
+## Beat 6 — Skills (49:00) — 🚫 NOTHING IS MUTATED HERE
 
-1. Grafana **CFS throttling** — non-zero
-2. **Worker node CPU** — twenty-something percent
-3. **Thread pool pending** — shallow
+**This beat changes nothing on the cluster.** Three panels, one skill, one decision.
+It is the segment least likely to fail on camera — keep it that way.
+
+1. Grafana **CFS throttling** — and it is not subtle
+2. **Worker node CPU** — twenty-something percent. The host is bored
+3. **Thread pool pending** — shallow. Nothing is queuing
 4. `/diagnose` — three signals that only mean something together
-
-**The sharpened point:** the pod is throttled at **~60% of its CPU quota**. CFS accounts
-in 100 ms periods, so a burst empties the slice inside one period while the 5-minute
-average looks fine. *"We were only at 60% and still throttled"* beats *"we hit the limit."*
 
 **Check Reaper here** — expect **12–15%**. Say the percentage; don't imply it's nearly done.
 
-| | Size 3 (17 Sep) | Size 6 (21 Sep) |
+Then land it as a **decision, not a fix**:
+
+> _"The skill is telling me I'm leaving throughput on the floor. I know. That limit is
+> sized for two pods per worker after the scale-up, and I'd rather show you a
+> constrained cluster honestly than a tuned one. I measured what fixing it buys —
+> throttling goes to 0.3%, p99 read halves — and I'm choosing not to."_
+
+⛔ **Do NOT raise the CPU limit live.** That step was removed 22 Sep. It contradicted
+the "deliberately left in place" framing, it is off-thesis for a k8ssandra/MCP/skills
+talk, and a CR edit triggers a rolling restart **measured at 9.1–9.7 min** — longer
+than this entire segment. The measured before/after below is the evidence; you do not
+need to perform it.
+
+**MEASURED 22 Sep**, ring size 3, corrected dataset, under 60k load:
+
+| | limit 14 (what you show) | limit 24 (measured, not shown) |
 |---|---|---|
-| Container CPU | 6.7 – 8.8 cores | 3.4 – 4.0 |
-| Limit | 14 | 14 |
-| Throttled periods | **peaks 6.7%** | 0.5 – 1.0% |
-| Worker node CPU | 24 – 36% | ~20% |
+| Throttled periods | **77 – 96%** | **0.2 – 0.3%** |
+| Container CPU | 12.4 – 13.9 of 14 | 10.1 – 19.3 of 24 |
+| p99 read | 26.8 ms | **15.5 ms** |
+| p99 write | 20.0 ms | **8.2 ms** |
+| Worker node CPU | ~20% — idle | ~20% |
 
 ---
 
@@ -229,12 +259,22 @@ average looks fine. *"We were only at 60% and still throttled"* beats *"we hit t
 
 ## Numbers card
 
+All measured on this cluster. Anything from before **22 Sep** was taken on a dataset
+with a broken data model (1.4 rows per partition) and is not comparable — those figures
+have been removed rather than footnoted.
+
 | | |
 |---|---|
-| Throughput | **59,997 ops/sec** (50,997 R + 9,000 W, 85/15) |
-| Soak proven | 324,000,000 cycles, 90 min, **0 errors** |
+| Throughput | **52,527 ops/sec** (44,648 R + 7,879 W, 85/15) against a 60k ask |
+| p99 read / write | **39 ms / 20 ms** |
+| p50 read / write | **3.0 ms / 1.4 ms** |
+| Client errors | **0** — timeouts, unavailables and failures all zero |
+| CPU | **9.7 – 13.7 cores** of a 14 limit; **27 – 88%** of periods throttled |
+| Worker node CPU | ~20% — the host is idle while the pod is capped |
 | Scale 3→6 | **9m20s**, 0 errors, 8% dip |
 | Node kill | `UN` in **44 s**, 3/3 in 64 s, 1 timeout |
-| Backup | **47.84 GB, 4,732 files, 8m38s** (size 6) |
-| Repair | **436 segments, ~2/min, 3.6 h** |
-| Dataset | 8.3 GB/node, 222.7 MB per 1M txns/node |
+| Backup | **47.84 GB, 4,732 files, 8m38s** (size 6) → ~4–5 min at size 3 |
+| Repair | **436 segments, ~2/min, completed in 3h 40m** |
+| Rolling restart (any CR edit) | **9.1 – 9.7 min** at size 3 |
+| Dataset | **9.8 GB/node**, 673k partitions, mean 4.3 KB, **max 71.5 MB** |
+| Heap | 8 GB in a 32 GiB container; GC 0.6–1.1% young, **0.00% old** |
