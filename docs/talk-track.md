@@ -160,6 +160,10 @@ That is MCP earning its place: the thing you started 8 minutes ago, verified in 
 sentence instead of a terminal full of `nodetool`. **Do not kill anything until it
 says 6/6** — that is Beat 4's gate, and you have until 42:00.
 
+**Optional, once 6/6:** start a full repair of `payments` from the Reaper tab. Beat 4's
+best line needs it ticking for a couple of minutes. **Never start it before the
+scale** — a repair spanning 3 → 6 was never measured.
+
 - **MCP in 30 seconds** — a standard for giving models tools. Server exposes tools →
   Claude calls them → results come back as context.
 - **easy-cass-mcp** speaks CQL, runs in-cluster, reached over a Route with edge TLS.
@@ -190,8 +194,8 @@ rolling-restart demo, not a failure demo.
 
 **Quote the 1, not "zero".** More credible, and true.
 
-🌟 **The line that lands.** A Reaper repair has been running in the background since
-before the talk started — and it **does not notice the kill.** Segments kept
+🌟 **The line that lands — only if you started the repair at 6/6.** It **does not
+notice the kill.** Segments kept
 incrementing straight through (22 → 23 → 24), rate unchanged, Reaper never restarted.
 Measured 21 Sep.
 
@@ -276,6 +280,6 @@ partition and is not comparable — those figures are gone, not footnoted.
 
 ## Pre-show (see the runbook in the outline)
 
-Ring at **size 3** · dataset loaded · NoSQLBench running ~60 min · **Reaper repair
-started** (it is background colour for Beat 4, not a demo) · Grafana + Reaper tabs open
+Ring at **size 3** · dataset loaded · NoSQLBench running ~60 min · Reaper registered,
+**no repair running** (start it after the scale, if at all) · Grafana + Reaper tabs open
 and logged in · **Claude Code restarted** and both MCP servers answering.

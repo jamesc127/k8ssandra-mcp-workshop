@@ -68,12 +68,13 @@ Differences worth knowing:
   present. Use `key_cache_size`, `compaction_throughput`, `stream_throughput_outbound` with
   units — never the `*_in_mb` / `*_mb_per_sec` / `*_megabits_per_sec` forms that most tuning
   guides still show.
-- **The 14-core CPU limit binds at ring size 3, on purpose.** Measured under load: containers
-  at 11.9–14.6 cores, 0.10–0.22% of CFS periods throttled, worker nodes only 20–32% busy.
-  The limit is sized for two pods per worker after the 3 → 6 scale; at size 3 each pod owns a
-  whole worker, so the quota costs throughput for nothing. It is kept because it makes the
+- **The 14-core CPU limit binds at ring size 3, on purpose.** Measured 22 Sep under the 60k
+  load: containers at 9.7–13.7 of 14 cores, 27–88% of CFS periods throttled, worker nodes
+  only ~20% busy. The limit is sized for two pods per worker after the 3 → 6 scale; at size 3
+  each pod owns a whole worker, so the quota costs ~13% of target throughput (52.5k sustained
+  against a 60k ask). It is kept because it makes the
   workshop's central finding demonstrable live rather than recounted — see `docs/talk-outline.md`
-  Part 8. **Any throughput number measured here comes from a deliberately constrained cluster.**
+  Beat 5. **Any throughput number measured here comes from a deliberately constrained cluster.**
 
 ### Monitoring uses two datasources
 

@@ -174,9 +174,9 @@ spec:
             #
             # It is kept because it makes the workshop's central finding LIVE
             # rather than recounted: /diagnose can find real throttling on the
-            # Grafana "CFS throttling" panel, and raising this number clears it
-            # on stage. Do not "fix" it without reading docs/talk-outline.md
-            # Part 8 first.
+            # Grafana "CFS throttling" panel. It is NOT raised on stage (a CR edit
+            # rolls the ring for ~9.5 min). Do not "fix" it without reading
+            # docs/talk-outline.md Beat 5 first.
             #
             # Consequence to state out loud: throughput numbers measured here
             # come from a deliberately constrained cluster.
@@ -271,7 +271,7 @@ spec:
     # The Reaper image hardcodes `sessionTimeout: PT10M` with no env var for it,
     # and that is also the JWT lifetime. The web UI polls with its stored token
     # and shows "no cluster" on the resulting 401 instead of returning to the
-    # login page, so a tab opened at T-25 is blank by Part 5b. Reaper is a
+    # login page, so a tab opened at T-25 is blank by Beat 4. Reaper is a
     # Dropwizard app, so a -Ddw.* system property overrides any config key.
     # JWT_SECRET replaces the default key published in the image's own config;
     # deploy-openshift.sh generates it.
