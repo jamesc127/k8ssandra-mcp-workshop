@@ -249,13 +249,23 @@ BUCKET_NAME="medusa-backups"
 # Create the bucket. Medusa does not create it for you, and a missing bucket
 # surfaces as an opaque 403 on HeadObject rather than anything obvious.
 echo "    Creating bucket $BUCKET_NAME..."
-kubectl run minio-mkbucket-$$ --rm -i --restart=Never -n "$NAMESPACE" \
-  --image=quay.io/minio/mc:latest --command -- sh -c "
-    mc alias set local http://minio.$NAMESPACE.svc.cluster.local:9000 '$MINIO_USER' '$MINIO_PASS' >/dev/null 2>&1 &&
-    mc mb --ignore-existing local/$BUCKET_NAME >/dev/null 2>&1 &&
-    echo BUCKET_OK" 2>/dev/null | grep -q BUCKET_OK && \
-  echo "    Bucket ready: $BUCKET_NAME" || \
-  echo "    WARNING: could not confirm bucket creation; Medusa may fail on first backup."
+# Create, then VERIFY SEPARATELY. `kubectl run --rm -i` races its own pod
+# deletion against log streaming, so its exit code and stdout are not a reliable
+# signal -- an earlier version reported failure on a bucket that had in fact
+# been created. Trust `mc ls`, not the creating command.
+mc_run() {
+  kubectl run "minio-mc-$1-$$" --rm -i --restart=Never -n "$NAMESPACE" \
+    --image=quay.io/minio/mc:latest --command -- sh -c "
+      mc alias set local http://minio.$NAMESPACE.svc.cluster.local:9000 '$MINIO_USER' '$MINIO_PASS' >/dev/null 2>&1
+      $2" 2>/dev/null
+}
+mc_run mb "mc mb --ignore-existing local/$BUCKET_NAME >/dev/null 2>&1" >/dev/null || true
+if mc_run ls "mc ls local/ 2>/dev/null" | grep -q "$BUCKET_NAME"; then
+  echo "    Bucket ready: $BUCKET_NAME"
+else
+  echo "    WARNING: bucket $BUCKET_NAME not found after creation attempt."
+  echo "             Medusa will fail on first backup. Check: kubectl logs deploy/minio -n $NAMESPACE"
+fi
 
 # Medusa reads an INI-format `credentials` key, not AWS_*-style env vars.
 kubectl create secret generic medusa-minio-key \
@@ -292,10 +302,56 @@ TICKER=$!
 trap 'kill $TICKER 2>/dev/null || true' EXIT
 
 DC_OK=true
+# `kubectl wait` ERRORS IMMEDIATELY on a resource that does not exist yet -- it
+# does not wait for it to appear. The operator needs a moment to reconcile the
+# K8ssandraCluster into a CassandraDatacenter, so waiting for Ready straight
+# away fails with "dc1 not found" on a perfectly healthy deploy.
+for _ in $(seq 1 60); do
+  kubectl get cassandradatacenter dc1 -n "$NAMESPACE" >/dev/null 2>&1 && break
+  sleep 5
+done
 kubectl wait --for=condition=Ready cassandradatacenter/dc1 -n "$NAMESPACE" --timeout=2400s || DC_OK=false
 
 kill $TICKER 2>/dev/null || true
 trap - EXIT
+
+# ---------------------------------------------------------------------------
+# Reaper's schema-init init-container crash-loops on a FRESH cluster.
+#
+# It applies ~34 CQL migration scripts, and its driver gives up waiting for
+# schema agreement after ~2s. On a newly-built ring each DDL takes longer than
+# that, so the container dies partway through script 034. The statements are
+# CREATE TABLE IF NOT EXISTS, so every restart gets FURTHER than the last --
+# it is genuinely making progress, not looping uselessly.
+#
+# The problem is Kubernetes' exponential backoff: by the 6th restart it is
+# waiting ~5 minutes between attempts, so "self-healing" takes the better part
+# of an hour. Deleting the pod resets the backoff timer and it finishes in two
+# or three quick attempts.
+#
+# MEASURED 22 Sep on a fresh deploy: crash-looped at 11 reaper_db tables with a
+# 5-minute backoff; two forced deletes took it to 19 tables and Running in
+# under three minutes.
+# ---------------------------------------------------------------------------
+echo ""
+echo ">>> Nudging Reaper through its schema migration..."
+for _ in $(seq 1 12); do
+  RP=$(kubectl get pods -n "$NAMESPACE" --no-headers 2>/dev/null | grep -- '-reaper-' | awk '{print $1}' | head -1)
+  [ -z "$RP" ] && { sleep 20; continue; }
+  RS=$(kubectl get pod "$RP" -n "$NAMESPACE" --no-headers 2>/dev/null | awk '{print $3}')
+  case "$RS" in
+    Running) echo "    Reaper is up."; break ;;
+    Init:CrashLoopBackOff|Init:Error)
+      echo "    Reaper in $RS — resetting backoff (this is expected on a fresh cluster)."
+      kubectl delete pod "$RP" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1 || true ;;
+    *) : ;;
+  esac
+  sleep 25
+done
+if ! kubectl get pods -n "$NAMESPACE" --no-headers 2>/dev/null | grep -- '-reaper-' | grep -q Running; then
+  echo "    WARNING: Reaper did not reach Running. Repairs will not work."
+  echo "             Retry: kubectl delete pod -l app.kubernetes.io/name=reaper -n $NAMESPACE"
+fi
 
 if [ "$DC_OK" != true ]; then
   echo ""
@@ -350,9 +406,19 @@ kubectl wait --for=condition=available deployment/easy-cass-mcp \
 ECM_PATCH="$SCRIPT_DIR/../patches/easy-cass-mcp/apply.sh"
 if [ -x "$ECM_PATCH" ]; then
   echo "    Applying easy-cass-mcp compaction-strategy patch..."
-  "$ECM_PATCH" >/dev/null 2>&1 \
-    && echo "    Patch applied." \
-    || echo "    WARNING: easy-cass-mcp patch FAILED. analyze_table_optimizations will report every table as STCS."
+  # apply.sh ends with `kubectl rollout status`, which times out while the
+  # deployment is mid-restart from the credentials rollout above -- a non-zero
+  # exit even though the ConfigMap and volumeMount landed correctly. Verify the
+  # mount instead of trusting the exit code.
+  "$ECM_PATCH" >/dev/null 2>&1 || true
+  if kubectl get deploy easy-cass-mcp -n "$NAMESPACE" \
+       -o jsonpath='{.spec.template.spec.volumes[*].name}' 2>/dev/null | grep -q ecm-patch; then
+    echo "    Patch applied."
+  else
+    echo "    WARNING: easy-cass-mcp patch did NOT apply."
+    echo "             analyze_table_optimizations will report every table as STCS."
+    echo "             Retry by hand: $ECM_PATCH"
+  fi
 else
   echo "    WARNING: $ECM_PATCH not found or not executable — skipping."
   echo "             analyze_table_optimizations will report every table as STCS."
