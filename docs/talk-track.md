@@ -10,29 +10,32 @@ Every number here is **measured on this cluster**.
 | # | Demo | Costs | Where |
 |---|---|---|---|
 | — | **Load test** — the backdrop, already running | 0 | visible throughout |
-| 1 | **Backup**, live | ~4–5 min | 22:00 |
-| 2 | **Scale 3 → 6**, live | **9 min 20 s** | 28:00 |
-| 3 | **MCP** — eyes on the cluster | — | 36:00 |
-| 4 | **Kill a node**, live | ~64 s | 42:00 |
-| 5 | **Skills** — diagnose | — | 48:00 |
+| 1 | **Backup**, live | ~4–5 min | 3:00 |
+| 2 | **Skills** — diagnose the 3-node ring | — | 28:00 |
+| 3 | **Scale 3 → 6**, live | **9 min 20 s** | 36:00 |
+| 4 | **MCP** — eyes on the cluster | — | 44:00 |
+| 5 | **Kill a node**, live | ~64 s | 50:00 |
 
-**Why this order.** Backup is ~4–5 min at size 3 but **8m38s at size 6** — do it before
-you scale or it costs double. The scale takes 9m20s and spans into the MCP segment, so
-MCP's first job is confirming the ring landed, which turns dead air into content. You
-cannot force-kill a node mid-bootstrap, so the kill waits until 6/6 UN.
+**Why this order.** Backup is ~4–5 min at size 3 but **8m38s at size 6** — so it goes
+straight after the cold open, while the ring is small. Skills comes *before* the scale
+because the diagnosis only exists at size 3: throttling is 27–88% there and 0.2–2% at
+size 6, so `/diagnose` after the scale would find nothing. Diagnose the gap, then close
+it. The scale takes 9m20s and spans into the MCP segment, so MCP's first job is
+confirming the ring landed, which turns dead air into content. You cannot force-kill a
+node mid-bootstrap, so the kill waits until 6/6 UN.
 
 ## Clock
 
 | Clock | Part | Beat |
 |---|---:|---|
 | 0:00 | Cold open | cluster already under load |
-| 3:00 | The journey | hand-YAML → operators → k8ssandra |
-| 8:00 | **What k8ssandra is** | ★ the segment this was sold on |
-| 22:00 | Backup | ▶ **START BACKUP** (first thing) |
-| 28:00 | Scale | ▶ **START SCALE** — talk over it |
-| 36:00 | MCP | ⏸ confirm 6/6 UN |
-| 42:00 | Kill a node | ▶ **FORCE-KILL** |
-| 48:00 | Skills | `/diagnose` — mutates nothing |
+| 3:00 | Backup | ▶ **START BACKUP** (first thing) |
+| 9:00 | The journey | hand-YAML → operators → k8ssandra |
+| 14:00 | **What k8ssandra is** | ★ the segment this was sold on |
+| 28:00 | Skills | `/diagnose` the 3-node ring — mutates nothing |
+| 36:00 | Scale | ▶ **START SCALE** — talk over it |
+| 44:00 | MCP | ⏸ confirm 6/6 UN |
+| 50:00 | Kill a node | ▶ **FORCE-KILL** |
 | 56:00 | Close | |
 | 60:00 | Q&A | |
 
@@ -51,19 +54,19 @@ Grafana tab — **~52,500 ops/sec against a 60,000 ask**, an hour of history,
 > _"Everything you're about to see is live. It's been running for an hour, it's under
 > load right now, and I'm not going to stop it for the rest of the talk."_
 
-🎯 **Name the gap here. It is deliberate, and it is the setup for Beat 2.**
+🎯 **Name the gap here. It is deliberate, and it is the setup for Beats 2 and 3.**
 
 > _"We're asking this cluster for sixty thousand operations a second and it's giving me
 > about fifty-two and a half. Nothing is failing — zero errors, zero timeouts. It just
 > can't go any faster. Hold that number."_
 
 `cyclerate` stays at **60000** on purpose. A flat line that meets a lowered target
-demos nothing. A visible shortfall you then close by adding capacity is the whole talk
-in one number — Beat 2 closes it, Beat 5 explains why it was there.
+demos nothing. A visible shortfall you diagnose and then close by adding capacity is the
+whole talk in one number — Beat 2 explains why it is there, Beat 3 closes it.
 
 ---
 
-## Beat 1 — Backup (22:00) — ▶ START IT BEFORE YOU EXPLAIN IT
+## Beat 1 — Backup (3:00) — ▶ START IT BEFORE YOU EXPLAIN IT
 
 > _"Start a full Medusa backup from `manifests/cassandra/medusa-backup-job.yaml`, then
 > watch the job and tell me as each node finishes."_
@@ -87,7 +90,50 @@ answer to a question, **not a slide**.
 
 ---
 
-## Beat 2 — Scale 3 → 6 (28:00) — ▶ START IT, THEN TALK
+## Beat 2 — Skills (28:00) — 🚫 NOTHING IS MUTATED HERE
+
+Three panels, one skill, one decision. The segment least likely to fail on camera.
+
+1. Grafana **CFS throttling** — and it is not subtle
+2. **Worker node CPU** — ~20%. The host is bored
+3. **Thread pool pending** — shallow. Nothing is queuing
+4. `/diagnose` — three signals that only mean something together
+
+**This is the audience's first look at MCP.** `/diagnose` reaches the ring through
+easy-cass-mcp (`query_all_nodes`). Let them watch the tool calls and don't explain them
+yet — Beat 4 names what they saw.
+
+**MEASURED 22 Sep**, size 3, under load:
+
+| | |
+|---|---|
+| Container CPU | **9.7 – 13.7** of a 14 limit (69–98%) |
+| Throttled periods | **27 – 88%** |
+| Worker node CPU | **~20%** |
+| Client errors | **0** |
+
+**The whole argument in one sentence:** the pod is held down 88% of the time while the
+worker it sits on is 80% idle, and every signal Cassandra exposes says healthy.
+
+Then the second failure, from the rehearsal screenshots: disks filled,
+`commit_failure_policy: stop` halted CQL and gossip **but left the JVM running** — pods
+`3/3 Running`, `nodetool status` `DN`. One failure invisible to Cassandra, one
+invisible to Kubernetes.
+
+Land it as a **decision**, and make the decision the bridge into Beat 3:
+
+> _"The skill is telling me I'm leaving throughput on the floor. It's right. I measured
+> what raising the limit buys — throttling goes to 0.3%, p99 read halves — and I'm not
+> doing it. That limit is sized for two pods per worker, which is exactly what we're
+> about to have. So instead of giving three pods more CPU, I'm going to give this
+> cluster three more pods."_
+
+⛔ **Do NOT raise the CPU limit live.** A CR edit triggers a rolling restart, measured
+at **9.1–9.7 min** — longer than this whole segment.
+
+---
+
+## Beat 3 — Scale 3 → 6 (36:00) — ▶ START IT, THEN TALK
 
 > _"Scale the `demo` K8ssandraCluster from 3 nodes to 6."_
 
@@ -101,8 +147,8 @@ real Kubernetes trap, made visible for free.
 ⚠️ **9 min 20 s**, so it finishes *during* the MCP segment. That is intentional.
 
 🎯 **The payoff: the gap from the cold open closes.** You opened saying the cluster
-wanted 60k and gave 52.5k. Doubling the ring is the answer to exactly that, and they
-have been looking at the shortfall for half an hour. Call it as the last node joins:
+wanted 60k and gave 52.5k, and Beat 2 just showed them why. Doubling the ring is the
+answer to exactly that, and they have been looking at the shortfall since the cold open. Call it as the last node joins:
 
 > _"That's the number I asked you to hold. We were twelve percent short because three
 > pods were pinned against a CPU limit. Same limit — twice the pods."_
@@ -135,7 +181,7 @@ Material to fill ~6 minutes:
 - Each rack 1 → 2; `size` must be a multiple of 3
 - **The compromise, out loud:** three workers means two replicas per node. At RF=3 /
   LOCAL_QUORUM, losing one node now costs two of three replicas. You would not do this
-  in production — `/expert` says exactly that, which sets up Beat 5.
+  in production — `/expert` says exactly that — a callback to Beat 2.
 - **Racks don't have to be AZs.** No zone labels on this cluster; these are three
   workers with a label. A rack is a *logical* failure domain. Most portable idea here.
 - Zero-Copy Streaming — file-level, not row by row
@@ -147,23 +193,25 @@ Material to fill ~6 minutes:
 
 ---
 
-## Beat 3 — MCP (36:00) — ⏸ THE SCALE LANDS DURING THIS BEAT
+## Beat 4 — MCP (44:00) — ⏸ THE SCALE LANDS DURING THIS BEAT
 
 > _"Is the ring at 6 nodes yet? Give me each node's rack, load and ownership."_
 
-**It will probably still be joining** — the scale started at 28:00 and needs 9m20s, so
-it lands around 37:20. That is the better answer, not the worse one: you get a live
+**It will probably still be joining** — the scale started at 36:00 and needs 9m20s, so
+it lands around 45:20. That is the better answer, not the worse one: you get a live
 `UJ` node and an ownership split mid-flight, which is the most honest picture of what
 the operator is doing. Ask again later in the segment and it will be 6/6.
 
 That is MCP earning its place: the thing you started 8 minutes ago, verified in one
 sentence instead of a terminal full of `nodetool`. **Do not kill anything until it
-says 6/6** — that is Beat 4's gate, and you have until 42:00.
+says 6/6** — that is Beat 5's gate, and you have until 50:00.
 
-**Optional, once 6/6:** start a full repair of `payments` from the Reaper tab. Beat 4's
+**Optional, once 6/6:** start a full repair of `payments` from the Reaper tab. Beat 5's
 best line needs it ticking for a couple of minutes. **Never start it before the
 scale** — a repair spanning 3 → 6 was never measured.
 
+- **Name what they already saw.** `/diagnose` in Beat 2 was MCP — this is the plumbing
+  behind it.
 - **MCP in 30 seconds** — a standard for giving models tools. Server exposes tools →
   Claude calls them → results come back as context.
 - **easy-cass-mcp** speaks CQL, runs in-cluster, reached over a Route with edge TLS.
@@ -176,7 +224,7 @@ scale** — a repair spanning 3 → 6 was never measured.
 
 ---
 
-## Beat 4 — Kill a node (42:00)
+## Beat 5 — Kill a node (50:00)
 
 > _"Force-kill the pod `demo-dc1-rack2-sts-1` — no grace period, no graceful drain.
 > I want it to die the way a real node dies."_
@@ -207,44 +255,6 @@ at `unavailables` and `timeouts`: *"no query failed; that's a pool reconnect."*
 
 ---
 
-## Beat 5 — Skills (48:00) — 🚫 NOTHING IS MUTATED HERE
-
-Three panels, one skill, one decision. The segment least likely to fail on camera.
-
-1. Grafana **CFS throttling** — and it is not subtle
-2. **Worker node CPU** — ~20%. The host is bored
-3. **Thread pool pending** — shallow. Nothing is queuing
-4. `/diagnose` — three signals that only mean something together
-
-**MEASURED 22 Sep**, size 3, under load:
-
-| | |
-|---|---|
-| Container CPU | **9.7 – 13.7** of a 14 limit (69–98%) |
-| Throttled periods | **27 – 88%** |
-| Worker node CPU | **~20%** |
-| Client errors | **0** |
-
-**The whole argument in one sentence:** the pod is held down 88% of the time while the
-worker it sits on is 80% idle, and every signal Cassandra exposes says healthy.
-
-Then the second failure, from the rehearsal screenshots: disks filled,
-`commit_failure_policy: stop` halted CQL and gossip **but left the JVM running** — pods
-`3/3 Running`, `nodetool status` `DN`. One failure invisible to Cassandra, one
-invisible to Kubernetes.
-
-Land it as a **decision, not a fix**:
-
-> _"The skill is telling me I'm leaving throughput on the floor. I know. That limit is
-> sized for two pods per worker after the scale-up, and I'd rather show you a
-> constrained cluster honestly than a tuned one. I measured what fixing it buys —
-> throttling goes to 0.3%, p99 read halves — and I'm choosing not to."_
-
-⛔ **Do NOT raise the CPU limit live.** A CR edit triggers a rolling restart, measured
-at **9.1–9.7 min** — longer than this whole segment.
-
----
-
 ## Failure playbook
 
 | If this happens | Do this |
@@ -253,7 +263,7 @@ at **9.1–9.7 min** — longer than this whole segment.
 | **Claude proposes `kubectl apply -f k8ssandra-cluster.yaml`** | **Stop it.** The manifest says `size: 3`; applying mid-talk decommissions three nodes. |
 | **Medusa: "backup already exists"** | Metadata lives in the bucket, not Kubernetes. Use a new name. |
 | **Scale looks hung** | It's 9m20s, not 6. Check `nodetool status` for `UJ`. |
-| **Ring not 6/6 at Beat 4** | Wait. Do not kill a node mid-bootstrap. Stretch Beat 3. |
+| **Ring not 6/6 at Beat 5** | Wait. Do not kill a node mid-bootstrap. Stretch Beat 4. |
 | **Claude picks a wrong approach** | Correct it in one sentence and move on. Better demo than a flawless one — it shows the loop has a human in it. |
 
 ---

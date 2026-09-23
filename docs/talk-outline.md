@@ -28,7 +28,7 @@
 > - **Say what you asked for out loud** before you hit enter. The audience reads the
 >   prompt; you narrate the intent.
 > - **Let them watch the tool calls.** The interesting part is often *which* tool Claude
->   reaches for — MCP for ring state, kubectl for pod state. That split is Beat 3's whole
+>   reaches for — MCP for ring state, kubectl for pod state. That split is Beat 4's whole
 >   argument, made visible for free.
 > - **Have the fallback command in your notes.** If Claude picks a wrong approach on
 >   stage, you correct it in one sentence and move on — that is a better demo than a
@@ -72,46 +72,56 @@ Notes that will save you on the day:
 
 > The event was sold on *"a clear introduction to k8ssandra, what it is, why it
 > matters, and how it fits into modern Cassandra operations."* The k8ssandra explainer
-> gets **14 minutes**, and the two demos after it — backup and scale — are k8ssandra
-> doing its job live. That is **28 minutes, nearly half the talk**, on exactly what was
-> promised. MCP and skills get the back half, and stop being the whole talk.
+> gets **14 minutes**, and the two demos that bracket it — the backup before it, the
+> scale after the diagnosis — are k8ssandra doing its job live. That is **28 minutes,
+> nearly half the talk**, on exactly what was promised. MCP and skills get the rest,
+> and stop being the whole talk.
 
 ## Time budget
 
 | Clock | Section | Min | |
 |---|---|---:|---|
 | 0:00 | Cold open — the cluster is already under load | 3 | |
-| 3:00 | The journey — hand-YAML → operators → k8ssandra | 5 | |
-| 8:00 | **★ What k8ssandra is** | 14 | the segment this was sold on |
-| 22:00 | **Beat 1 — Backup** | 6 | ▶ start it first |
-| 28:00 | **Beat 2 — Scale 3 → 6** | 8 | ▶ start it, then talk |
-| 36:00 | **Beat 3 — MCP** | 6 | ⏸ the scale lands here |
-| 42:00 | **Beat 4 — Kill a node** | 6 | ▶ force-kill |
-| 48:00 | **Beat 5 — Skills** | 8 | mutates nothing |
+| 3:00 | **Beat 1 — Backup** | 6 | ▶ start it first |
+| 9:00 | The journey — hand-YAML → operators → k8ssandra | 5 | |
+| 14:00 | **★ What k8ssandra is** | 14 | the segment this was sold on |
+| 28:00 | **Beat 2 — Skills** | 8 | diagnose the 3-node ring — mutates nothing |
+| 36:00 | **Beat 3 — Scale 3 → 6** | 8 | ▶ start it, then talk |
+| 44:00 | **Beat 4 — MCP** | 6 | ⏸ the scale lands here |
+| 50:00 | **Beat 5 — Kill a node** | 6 | ▶ force-kill |
 | 56:00 | Close | 4 | |
 | 60:00 | Q&A | ~10 | |
 
 ### Five demos, and nothing else
 
-Backup, scale, MCP, node kill, skills — against a load test that is simply always
+Backup, skills, scale, MCP, node kill — against a load test that is simply always
 there. Everything else that used to be a live segment was cut on 22 Sep:
 
 - **Reaper is not a beat.** A repair is optional, and never before the scale-up: if
   one runs at all, it is started from the Reaper tab once the ring is 6/6 UN, late in
-  Beat 3. It earns exactly one line, in Beat 4: _"the repair didn't even notice."_
+  Beat 4. It earns exactly one line, in Beat 5: _"the repair didn't even notice."_
 - **Monitoring / ServiceMonitor is not a demo.** It is folded into the k8ssandra
   section as "four lines of `telemetry:` produced all of this", shown on Grafana.
 - **The CRD map is a slide**, not a live query.
 
 That is what buys the k8ssandra explainer 14 minutes instead of 12.
 
-**Why this order.** Backup is ~4–5 min at size 3 but **8m38s at size 6** — do it before
-you scale or it costs double. The scale takes 9m20s and spans into the MCP beat, so
-MCP's first job is confirming the ring landed, which turns dead air into content. You
-cannot force-kill a node mid-bootstrap, so the kill waits until 6/6 UN.
+**Why this order (reordered 23 Sep).** Backup is ~4–5 min at size 3 but **8m38s at
+size 6** — so it goes straight after the cold open, while the ring is small and before
+anything else can touch it. Skills comes *before* the scale because the diagnosis only
+exists at size 3: CFS throttling is 27–88% there and 0.2–2% at size 6, so `/diagnose`
+after the scale would find nothing to explain. Diagnose the gap the cold open named,
+then close it — the diagnosis is what motivates the scale. The scale takes 9m20s and
+spans into the MCP beat, so MCP's first job is confirming the ring landed, which turns
+dead air into content. You cannot force-kill a node mid-bootstrap, so the kill waits
+until 6/6 UN.
+
+One consequence: **the audience sees MCP work in Beat 2 before Beat 4 explains it.**
+`/diagnose` calls easy-cass-mcp on screen. Let it — Beat 4 opens by naming what they
+already watched.
 
 **Pre-show state (see README step 6 and the runbook at the end):** ring at **`size: 3`**
-— Beat 2 scales it to 6 live, so it must start at 3 — dataset preloaded, NoSQLBench
+— Beat 3 scales it to 6 live, so it must start at 3 — dataset preloaded, NoSQLBench
 running for ~60 min so throughput has settled, Reaper registered but **no repair
 running**, Grafana and Reaper tabs open and logged in, Claude Code restarted and both MCP servers
 verified.
@@ -133,7 +143,7 @@ Point at what is on screen, in this order:
 - Over in `monitoring`: **Prometheus and Grafana**
 
 (The node-labels query that used to follow is gone. The "racks are just a label on
-a node" point lands better in Beat 2, where it is the reason the scale works.)
+a node" point lands better in Beat 3, where it is the reason the scale works.)
 
 Then switch to the Grafana tab, already showing an hour of history at
 **~52,500 ops/sec against a 60,000 ask** (measured 22 Sep: 44,648 read + 7,879 write,
@@ -142,7 +152,7 @@ an 85/15 mix, zero errors).
 > _"Everything you're about to see is live. It's been running for an hour, it's
 > under load right now, and I'm not going to stop it for the rest of the talk."_
 
-🎯 **Name the gap here. It is deliberate, and it is the setup for Beat 2.**
+🎯 **Name the gap here. It is deliberate, and it is the setup for Beats 2 and 3.**
 
 > _"We're asking this cluster for sixty thousand operations a second and it's giving me
 > about fifty-two and a half. Nothing is failing — zero errors, zero timeouts. It just
@@ -150,141 +160,15 @@ an 85/15 mix, zero errors).
 
 **Decided 22 Sep: `cyclerate` stays at 60000.** The cluster sustains ~52.5k because it
 is CPU-bound against its 14-core limit, so the graph sits ~13% under its own target.
-**That gap is the point, not a blemish.** Beat 2 closes it by doubling the ring; Beat 5
-explains why it was there when `/diagnose` finds the cgroup ceiling.
+**That gap is the point, not a blemish.** Beat 2 explains why it is there when
+`/diagnose` finds the cgroup ceiling; Beat 3 closes it by doubling the ring.
 
 A flat line that meets a lowered target demos nothing. A shortfall you diagnose and
 then fix with capacity is the whole talk in one number.
 
 ---
 
-## The journey (3:00, ~5 min) — Hand-YAML → Operators → k8ssandra
-
-Three old sections compressed into one. **Keep it tight — it is setup for the
-k8ssandra section, not a destination.**
-
-**The consultant (~1 min)**
-- Speaker intro: background as a Cassandra consultant
-- Thesis: AI tooling is changing how we operate databases — but there are multiple
-  approaches with real tradeoffs
-- _"By the end of this talk I'm going to double the size of this cluster and kill a
-  node, in front of you, while a load test is running — and then ask Claude what
-  happened."_
-
-**Hand-editing YAML: the dark ages (~2 min)**
-- `cassandra.yaml`, `cassandra-env.sh`, `jvm.options` — across N nodes, by hand
-- Seed lists, rack assignments, snitch configs, GC tuning — all bespoke per cluster
-- Config drift is the real enemy: one wrong indent and a node won't join the ring
-- Rolling restarts: SSH into each node in order, pray nothing times out, repeat
-- _"I've seen more YAML than my family"_
-
-**Cassandra meets Kubernetes: hope and pain (~2 min)**
-- **The promise:** declarative infrastructure, self-healing, automated scaling
-- **The hardest problems:** PVCs that don't follow pods; rolling restarts that know
-  nothing about streaming or repair state; rack-aware scheduling, anti-affinity and
-  token math, all by hand
-- **Config management only got you halfway.** Ansible, Terraform and Puppet get you
-  to a desired state; they don't *keep* you there. A dead node is still a dead node
-  waiting for a human and a playbook run.
-- **The gap:** you can automate the deploy and still have nothing that runs repairs,
-  takes backups, or tells you the cluster is unhealthy.
-
----
-
-## ★ What k8ssandra is (8:00, ~14 min)
-
-**This is the segment the event was sold on.** Deck slides 3–10.
-
-### a. What k8ssandra is, and isn't (~2 min)
-
-- An **umbrella project**, not a single operator
-- **Not** a fork of Cassandra. **Not** a distribution. It runs stock Apache
-  Cassandra — the exact 5.0.8 you'd download — with operators around it
-- Lineage: born out of the DataStax Kubernetes work, now a community project; the
-  same engineering that underpins Mission Control
-
-**Stargate — name it, and be straight about it.** It was the project's data-API
-gateway (REST, GraphQL, gRPC over Cassandra). It is **deprecated, and it does not
-work with Cassandra 5.0+**. The operator emits a deprecation warning if you set the
-field. It is not deployed in this workshop.
-
-> _"I could have quietly left that off the slide. But a project that retires
-> something and tells you clearly is a project you can plan around."_
-
-### b. The components (~3 min)
-
-Six pieces — three foundation, three batteries:
-
-| Component | What it does |
-|---|---|
-| **cass-operator** | Owns the ring: StatefulSets, seed discovery, rack placement, rolling restarts that understand Cassandra's state |
-| **k8ssandra-operator** | Owns the *suite*: reconciles one `K8ssandraCluster` CR into cass-operator resources plus everything below |
-| **management-api** | Runs inside every Cassandra container — the HTTP control plane the operators actually drive (this is what replaced shelling into `nodetool`) |
-| **Reaper** | Segmented, scheduled anti-entropy repair — the zombie-data preventer |
-| **Medusa** | Backup and restore, a sidecar per pod, to any S3-compatible bucket |
-| **metrics agent** | Native Prometheus endpoint via the management API, no JMX exporter to hand-roll |
-
-There is also a **client CLI** for the bits that don't belong in a CR — worth a
-mention, not a row.
-
-Reaper gets its sentence here and nowhere else until Beat 4: *"it registered itself
-— I configured nothing."*
-
-### c. The CRD map — a slide (~2 min)
-
-Show §4 of `docs/architecture-diagrams-openshift.md` (the CRD ownership map), with §2
-for the workload layout if there are questions.
-
-Point out the CRD *groups* — `k8ssandra.io`, `cassandra.datastax.com`,
-`medusa.k8ssandra.io`, `reaper.k8ssandra.io`, `control.k8ssandra.io` — and that every
-one of them is **instantiated** in this cluster, not just installed. "Installed" and
-"instantiated" are different claims; this is the slide where you can make both.
-
-**Why this is a slide and not a live query (decided 22 Sep):** a live call costs a
-minute and a failure mode to make a point a static diagram makes just as well — and
-the demos after this section already show Claude reading the cluster, five times.
-
-### d. One CR, one suite (~2 min)
-
-Put the CR on screen next to what it replaces:
-
-- **One `K8ssandraCluster` CR — ~130 lines of YAML, 333 with the comments** →
-  StatefulSets, headless services, the superuser secret, PVC lifecycle, rack
-  placement, a repair scheduler, a backup pipeline, and ServiceMonitors
-- The rack block is six lines. That's the token math from the journey, gone
-- The ceiling: control-plane / data-plane split gives you multi-DC and
-  multi-cluster from the same CR shape
-
-### e. Monitoring — four lines of telemetry (~3 min)
-
-**Shown on Grafana, not demoed.** Put the four lines of `telemetry:` from the CR on
-screen, then switch to the
-[Grafana tab](https://grafana-monitoring.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com):
-
-> _"Those four lines produced all of this."_
-
-Throughput, p99 read and write latency, pending compactions, per-pod CPU, disk used
-per pod. The operator wrote the ServiceMonitor; there is no JMX exporter sidecar, no
-scrape config, no relabeling rules.
-
-- **Gotcha worth 20 seconds:** every published k8ssandra Grafana dashboard targets
-  the deprecated MCAC endpoint (`collectd_mcac_*`). Cassandra 5 exposes
-  `org_apache_cassandra_metrics_*` through the management API. Grab a community
-  dashboard and every panel renders empty. This one was built against the live names.
-
-### f. Governance and cadence (~2 min)
-
-- **v1.33.0 released 2026-09-03** — shipping Reaper 5.0.1, Medusa 0.30.1,
-  cass-operator 1.32.0
-- Its entire changeset that release was Medusa and Reaper fixes — the component
-  we're about to demo, and the one that registered itself with no configuration. That's what an
-  actively maintained project looks like
-- Pin your versions. This workshop pins all four Helm charts, and the reason is
-  boring and important: an unpinned chart that bumps between rehearsal and showtime
-
----
-
-## Beat 1 — Backup (22:00, ~6 min) — ▶ START IT BEFORE YOU EXPLAIN IT
+## Beat 1 — Backup (3:00, ~6 min) — ▶ START IT BEFORE YOU EXPLAIN IT
 
 > **Ask Claude:** _"Start a full Medusa backup from
 > `manifests/cassandra/medusa-backup-job.yaml`, then watch the job and tell me as each
@@ -325,280 +209,133 @@ Per-node backup sizes, in object storage that did not exist ten minutes ago.
 
 ---
 
-## Beat 2 — Scale 3 → 6 (28:00, ~8 min) — ▶ START IT, THEN TALK
+## The journey (9:00, ~5 min) — Hand-YAML → Operators → k8ssandra
 
-If you take one thing from this session: **scaling Apache Cassandra under load is
-no longer an event.**
+Three old sections compressed into one. **Keep it tight — it is setup for the
+k8ssandra section, not a destination.**
 
-> **Ask Claude:** _"Scale the `demo` K8ssandraCluster from 3 nodes to 6."_
+**The consultant (~1 min)**
+- Speaker intro: background as a Cassandra consultant
+- Thesis: AI tooling is changing how we operate databases — but there are multiple
+  approaches with real tradeoffs
+- _"By the end of this talk I'm going to double the size of this cluster and kill a
+  node, in front of you, while a load test is running — and then ask Claude what
+  happened."_
 
-**Watch which patch it chooses** — this is worth ten seconds of narration. A
-strategic-merge patch replaces the whole datacenter array and gets rejected with
-"storageConfig must be defined"; the edit has to be a JSON patch targeting
-`/spec/cassandra/datacenters/0/size`. It is a genuinely non-obvious Kubernetes trap, and
-watching it get picked correctly is more convincing than asserting it on a slide.
+**Hand-editing YAML: the dark ages (~2 min)**
+- `cassandra.yaml`, `cassandra-env.sh`, `jvm.options` — across N nodes, by hand
+- Seed lists, rack assignments, snitch configs, GC tuning — all bespoke per cluster
+- Config drift is the real enemy: one wrong indent and a node won't join the ring
+- Rolling restarts: SSH into each node in order, pray nothing times out, repeat
+- _"I've seen more YAML than my family"_
 
-Then hand Claude the job of narrating the bootstrap for you:
-
-> **Ask Claude:** _"Watch the scale-up. Every 30 seconds tell me the ring status, which
-> node is joining, and whether throughput dipped."_
-
-**Start it, then talk over it** — bootstraps are serial and this takes **9 min 20 s**.
-The beat is 8 minutes, so the scale lands at about **37:20, inside Beat 3**. That is
-intentional: Beat 3 opens by asking whether it landed. But it means **do not
-force-kill a node until the ring is 6/6 UN** — that is Beat 4's gate.
-
-### The payoff: the gap from the cold open closes
-
-You opened saying the cluster wanted 60k and gave 52.5k. Doubling the ring is the
-answer to exactly that, and they have been looking at the shortfall for half an hour.
-Call it as the last node joins:
-
-> _"That's the number I asked you to hold. We were twelve percent short because three
-> pods were pinned against a CPU limit. Same limit — twice the pods."_
-
-✅ **Verified 22 Sep on the corrected dataset.** The gap does not just close — it
-overshoots:
-
-| | size 3 | size 6 |
-|---|---|---|
-| Throughput | 52,500 | **65,000+** |
-| p99 read | 39 ms | **14.5 ms** |
-| p99 write | 20 ms | **7.9 ms** |
-| Container CPU | 9.7 – 13.7 of 14 | **6.3 – 8.9** |
-| Throttled periods | **27 – 88%** | **0.2 – 2.0%** |
-| Errors | 0 | **0** |
-| Time to 6/6 UN | — | **9 min 04 s** |
-
-**Narrate the overshoot — it is real and it looks great.** NoSQLBench has been running
-~13% behind its 60k ask for an hour, so when capacity arrives it bursts to ~66k to
-clear the backlog before settling back onto the 60k rate limit.
-
-> _"It's not just hitting sixty thousand now — it's running ahead to make up what it
-> couldn't do for the last hour. Watch it settle back onto the target."_
-
-Be precise if asked: **60k is the rate limit, not the ceiling.** The overshoot is
-catch-up. What was measured is that the ceiling is no longer below the ask.
-
-### Material to fill the wait
-
-- Each rack goes 1 → 2. `size` must be a multiple of 3 or the racks go unbalanced
-- **Be straight about the compromise.** This cluster has three Cassandra workers, so
-  doubling the ring means two replicas land on each node. For an RF=3 keyspace at
-  LOCAL_QUORUM, losing one node now costs two of three replicas. You would not do
-  this in production — and `/expert` says exactly that, which sets up
-  Beat 5. Say it out loud; the audience has three-node clusters too.
-- **Racks don't have to be AZs.** This cluster has no zone labels at all, so the
-  racks here are three worker nodes with a label I applied. A rack is a *logical*
-  failure domain — map it to whatever your real one is. That reframing is the most
-  portable idea in this section.
-- **Rack-aware placement is the thing that failed last time** (optional, if there is
-  time). Two racks, and Cassandra's default
-  `allocate_tokens_for_local_replication_factor=3` couldn't allocate tokens —
-  bootstrap just stalled. Worth telling as a failure, because it's the kind that looks
-  like a hang, not an error.
-- **Zero-Copy Streaming**: sstables stream at the file level, not row by row
-- What the operator is doing: one node at a time, waiting for each to finish joining
-  before starting the next — the thing you used to do by hand with a runbook and a
-  Slack thread
-
-### Mechanics, for your own understanding
-
-**Timings, 17 Sep rehearsal:** patch to 6/6 `UN` in **9 min 20 s**, first new node
-joined at ~2 min, **0** NoSQLBench errors. These are ring and streaming mechanics and
-still hold. The throughput figures from that run were taken on the pre-22-Sep dataset
-and have been removed, not footnoted.
-
-**What ownership looks like mid-scale** — the shape Beat 3's ring query will probably
-catch, since the scale is still running when you ask:
-
-```
-UN  rack1   original             owns 51.5%
-UN  rack2   original             owns 51.5%
-UN  rack3   original             owns 100.0%   <- not yet split
-UN  rack2   NEW, joined          owns 48.5%
-UJ  rack1   NEW, still streaming
-```
-
-One rack still at 100% while the others have already halved. That single screen says
-more about what the operator is doing than any slide would.
-
-**A caveat worth knowing.** On 17 Sep the scale succeeded and the load never saw an
-error — but the `server-system-logger` sidecar OOMKilled on several pods during it
-(128 MiB limit, 122 MiB steady state). Cassandra was untouched and never left the
-ring, yet those pods reported **2/3 Ready**. The limit is now 256 MiB.
-
-That is the exact inverse of the disk-full failure in Beat 5, where the pod said
-3/3 Running and Cassandra was dead. Pod readiness was wrong in both directions, for
-opposite reasons.
+**Cassandra meets Kubernetes: hope and pain (~2 min)**
+- **The promise:** declarative infrastructure, self-healing, automated scaling
+- **The hardest problems:** PVCs that don't follow pods; rolling restarts that know
+  nothing about streaming or repair state; rack-aware scheduling, anti-affinity and
+  token math, all by hand
+- **Config management only got you halfway.** Ansible, Terraform and Puppet get you
+  to a desired state; they don't *keep* you there. A dead node is still a dead node
+  waiting for a human and a playbook run.
+- **The gap:** you can automate the deploy and still have nothing that runs repairs,
+  takes backups, or tells you the cluster is unhealthy.
 
 ---
 
-## Beat 3 — MCP (36:00, ~6 min) — ⏸ THE SCALE LANDS DURING THIS BEAT
+## ★ What k8ssandra is (14:00, ~14 min)
 
-Open with the question the audience is already asking:
+**This is the segment the event was sold on.** Deck slides 3–10.
 
-> **Ask Claude:** _"Is the ring at 6 nodes yet? Give me each node's rack, load and
-> ownership."_
+### a. What k8ssandra is, and isn't (~2 min)
 
-**It will probably still be joining** — the scale started at 28:00 and needs 9m20s.
-That is the better answer, not the worse one: you get a live `UJ` node and an
-ownership split mid-flight, which is the most honest picture of what the operator is
-doing. Ask again later in the beat and it will be 6/6.
+- An **umbrella project**, not a single operator
+- **Not** a fork of Cassandra. **Not** a distribution. It runs stock Apache
+  Cassandra — the exact 5.0.8 you'd download — with operators around it
+- Lineage: born out of the DataStax Kubernetes work, now a community project; the
+  same engineering that underpins Mission Control
 
-That is MCP earning its place: the thing you started eight minutes ago, verified in one
-sentence instead of a terminal full of `nodetool`. **Do not kill anything until it
-says 6/6** — you have until 42:00.
+**Stargate — name it, and be straight about it.** It was the project's data-API
+gateway (REST, GraphQL, gRPC over Cassandra). It is **deprecated, and it does not
+work with Cassandra 5.0+**. The operator emits a deprecation warning if you set the
+field. It is not deployed in this workshop.
 
-**Optional, once it says 6/6:** start a full repair of `payments` from the Reaper tab
-and leave it. It is only there to give Beat 4 its best line, and it needs a couple of
-minutes of visibly ticking segments before the kill. Skip it and Beat 4 simply loses
-one sentence.
+> _"I could have quietly left that off the slide. But a project that retires
+> something and tells you clearly is a project you can plan around."_
 
-### What MCP is, and why this one is narrow
+### b. The components (~3 min)
 
-- **MCP in 30 seconds** — Model Context Protocol, a standard for giving models tools.
-  Server exposes tools → Claude calls them → results come back as context.
-- **easy-cass-mcp:** a domain-specific MCP server that speaks CQL, deployed
-  in-cluster. Claude Code → OpenShift Route (edge TLS) → easy-cass-mcp pod → Cassandra
-  pods. The endpoint is
-  `https://easy-cass-mcp-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com/mcp/`
-  — worth putting on the slide, because "the MCP server is a URL your agent dials" is
-  the whole architecture in one line.
+Six pieces — three foundation, three batteries:
 
-  | Tool | What it does |
-  |---|---|
-  | `query_all_nodes(cql)` | Fans out a CQL query to every replica, labels results by node — essential for the `system_views.*` per-node virtual tables |
-  | `query_node(addr, cql)` | Targets a single replica for deep dives |
-  | `query_system_table(keyspace, table)` | Curated access to system keyspaces (peers, local, sstable_activity, ...) |
-  | `get_create_table(keyspace, table)` | Pulls canonical schema — feeds data-model analysis |
-  | `analyze_table_optimizations(keyspace, table)` | Version-aware compaction recommendations |
-
-- **Build narrow, not wide:**
-  - Tried a generic Kubernetes MCP server first — a single `get pods` dumps
-    thousands of tokens of labels, annotations, status conditions
-  - easy-cass-mcp returns only what's relevant, structured by node
-  - **Takeaway: MCP server *design* matters as much as MCP server existence.**
-
-### A second MCP server, and why it matters more than it looks
-
-Also connected: **[grafana/mcp-grafana](https://github.com/grafana/mcp-grafana)**,
-Grafana Labs' own server. Run read-only — a Viewer service account, `--disable-write`,
-and the tool surface trimmed from ~60 to 17.
-
-Three reasons it earns its slide:
-
-- **It is not mine.** Everything else on stage is something I built or configured.
-  This is a vendor arriving at the same pattern independently, which is the difference
-  between "here is my clever setup" and "here is where the ecosystem is going."
-- **It solves a real constraint.** Prometheus on this cluster is ClusterIP with no
-  Route. The server proxies PromQL *through* Grafana's datasource API, so it needs
-  only the Grafana URL and a token — nothing new exposed.
-- **It spans both layers.** It can reach our kube-prometheus-stack *and* OpenShift's
-  Thanos. That is Beat 5's two-layer argument with the agent as the thing that spans
-  them, instead of you alt-tabbing between dashboards.
-
-> **The story worth telling, because it is true and it is recent.** Within ten minutes
-> of being connected, it caught a wrong number on this deck. Slide 17 claimed Cassandra
-> was pegged at 14/14 CPU. It was not — OpenShift's Thanos returns two identical
-> cAdvisor series per container, the panel summed them, and every CPU and memory reading
-> was double. The tell was already on the slide: the worker-node panel disagreed, and
-> had for days.
->
-> _The AI made a claim I could check against two other sources, and checking is what
-> found it._ That is the honest version of the whole talk — not "the AI was right".
-
----
-
-## Beat 4 — Kill a node (42:00, ~6 min) — ▶ ONLY AFTER 6/6 UN
-
-_The load test is still running. The ring just went to 6._
-
-> **Ask Claude:** _"Force-kill the pod `demo-dc1-rack2-sts-1` — no grace period, no
-> graceful drain. I want it to die the way a real node dies."_
-
-**Ask for the force-kill explicitly.** A polite `kubectl delete pod` gives Cassandra a
-clean drain, which is a demo of a rolling restart, not of a node failure. The
-44-second recovery below is only impressive because nothing was handed over.
-
-**Measured, 17 Sep rehearsal** — `--grace-period=0 --force` under the 60k load:
-
-| | |
+| Component | What it does |
 |---|---|
-| Node detected `DN` | ~24 s |
-| Back to `UN` | **44 s** |
-| Pod `3/3 Running` | **64 s** |
-| `unavailables` / `failures` | **0** / **0** |
-| `timeouts` | **1**, over 10 minutes and ~36M operations |
+| **cass-operator** | Owns the ring: StatefulSets, seed discovery, rack placement, rolling restarts that understand Cassandra's state |
+| **k8ssandra-operator** | Owns the *suite*: reconciles one `K8ssandraCluster` CR into cass-operator resources plus everything below |
+| **management-api** | Runs inside every Cassandra container — the HTTP control plane the operators actually drive (this is what replaced shelling into `nodetool`) |
+| **Reaper** | Segmented, scheduled anti-entropy repair — the zombie-data preventer |
+| **Medusa** | Backup and restore, a sidecar per pod, to any S3-compatible bucket |
+| **metrics agent** | Native Prometheus endpoint via the management API, no JMX exporter to hand-roll |
 
-**Quote the 1, not "zero".** It is a more credible number, and it is the truth. (The
-throughput trace from that run was on the pre-22-Sep dataset and has been dropped; the
-timings are ring mechanics and still hold.)
+There is also a **client CLI** for the bits that don't belong in a CR — worth a
+mention, not a row.
 
-### 🌟 The line that lands: the repair didn't notice (only if you started one)
+Reaper gets its sentence here and nowhere else until Beat 5: *"it registered itself
+— I configured nothing."*
 
-If you started a Reaper repair once the ring hit 6/6, it is running now — and **a
-force-kill does not interrupt it.** Measured 21 Sep: segments kept incrementing
-straight through (22 → 23 → 24), at the same ~2/min, and Reaper never restarted.
+### c. The CRD map — a slide (~2 min)
 
-Why that matters, in two sentences if anyone asks: replicas drift because writes
-fail, hints expire, and nodes miss mutations while down. If a deleted row isn't
-repaired before `gc_grace_seconds`, the tombstone is collected and the row comes back
-from a replica that never heard about the delete — zombie data.
+Show §4 of `docs/architecture-diagrams-openshift.md` (the CRD ownership map), with §2
+for the workload layout if there are questions.
 
-And why the repair is never the demo itself: a full repair of
-`payments` is **436 segments at ~2/min, and completed in 3 h 40 min** (measured on an
-idle 6-node ring). **Do not apologise for that number — it is the entire argument for
-Reaper.** A multi-hour job split into hundreds of resumable segments, paced so it does
-not compete with production traffic, that survives a node dying underneath it, is
-exactly the job you do not want to run by hand. If the bar were "finishes during a
-conference talk", nobody would need the tool.
+Point out the CRD *groups* — `k8ssandra.io`, `cassandra.datastax.com`,
+`medusa.k8ssandra.io`, `reaper.k8ssandra.io`, `control.k8ssandra.io` — and that every
+one of them is **instantiated** in this cluster, not just installed. "Installed" and
+"instantiated" are different claims; this is the slide where you can make both.
 
-Two different events, two different outcomes, both measured 21 Sep:
+**Why this is a slide and not a live query (decided 22 Sep):** a live call costs a
+minute and a failure mode to make a point a static diagram makes just as well — and
+the demos around this section already show Claude reading the cluster, five times.
 
-| Event | Reaper | The repair |
-|---|---|---|
-| **Force-kill one node** — what this beat does | **no restart** | **never paused**, same ~2/min throughout |
-| **Rolling restart of every pod** (any CR edit) | exits code 1 after 9 s, recovers on its own | resumes from the last completed segment |
+### d. One CR, one suite (~2 min)
 
-**Why the repair waits until after the scale (decided 22 Sep).** Starting it at 6/6
-reproduces the 21 Sep measurement exactly — repair started at size 6, node killed at
-size 6, no topology change in between. A repair that spans the 3 → 6 scale-up was
-never measured, so it is not attempted.
+Put the CR on screen next to what it replaces:
 
-> ⚠️ **One combination is still unmeasured:** the kill timings above (17 Sep) were taken
-> with no repair running, and the 21 Sep repair measurement was on an idle ring. A
-> repair *plus* the 60k load *plus* the kill has not been run together. The repair
-> adds load, so expect the recovery to be no faster than 44 s / 64 s. If the repair is
-> not visibly ticking before 42:00, skip it and the line — the kill stands on its own
-> numbers.
+- **One `K8ssandraCluster` CR — ~130 lines of YAML, 333 with the comments** →
+  StatefulSets, headless services, the superuser secret, PVC lifecycle, rack
+  placement, a repair scheduler, a backup pipeline, and ServiceMonitors
+- The rack block is six lines. That's the token math from the journey, gone
+- The ceiling: control-plane / data-plane split gives you multi-DC and
+  multi-cluster from the same CR shape
 
-### Then the debrief
+### e. Monitoring — four lines of telemetry (~3 min)
 
-> **Ask Claude:** _"What do you see now?"_
+**Shown on Grafana, not demoed.** Put the four lines of `telemetry:` from the CR on
+screen, then switch to the
+[Grafana tab](https://grafana-monitoring.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com):
 
-Claude re-queries and surfaces the anomaly: the restarted node's counters are a
-fraction of its peers' and ramping. It should read that as a recent restart, not a
-fault, and note the load test never dropped a query.
+> _"Those four lines produced all of this."_
 
-**Two details worth showing, because they are the actual mechanism:**
+Throughput, p99 read and write latency, pending compactions, per-pod CPU, disk used
+per pod. The operator wrote the ServiceMonitor; there is no JMX exporter sidecar, no
+scrape config, no relabeling rules.
 
-- The node logged **`Using saved tokens`** and reused its PVC
-  (`server-data-demo-dc1-rack2-sts-1`), keeping the same host ID. It did **not**
-  re-bootstrap — there was no streaming, because the data was already on disk.
-  Cassandra saw the same node returning from a brief outage, not a new one.
-- NoSQLBench will print red `ConnectionInitException` warnings. **Those are not
-  query failures.** They are the driver's admin thread rebuilding its connection
-  pool against the replacement pod's new IP, backing off 8.7s → 14.9s → 21.9s
-  → 30.9s. Point at `unavailables` and `timeouts`: _"no query failed; that's a pool
-  reconnect."_
+- **Gotcha worth 20 seconds:** every published k8ssandra Grafana dashboard targets
+  the deprecated MCAC endpoint (`collectd_mcac_*`). Cassandra 5 exposes
+  `org_apache_cassandra_metrics_*` through the management API. Grab a community
+  dashboard and every panel renders empty. This one was built against the live names.
 
-**The point:** in the old world that was a maintenance window, a runbook, and a
-Slack thread. Here it is a 64-second demo with a natural-language debrief.
+### f. Governance and cadence (~2 min)
+
+- **v1.33.0 released 2026-09-03** — shipping Reaper 5.0.1, Medusa 0.30.1,
+  cass-operator 1.32.0
+- Its entire changeset that release was Medusa and Reaper fixes — the component
+  you just watched back up this ring, and the one that registered itself with no configuration. That's what an
+  actively maintained project looks like
+- Pin your versions. This workshop pins all four Helm charts, and the reason is
+  boring and important: an unpinned chart that bumps between rehearsal and showtime
 
 ---
 
-## Beat 5 — Skills (48:00, ~8 min) — 🚫 NOTHING IS MUTATED HERE
+## Beat 2 — Skills (28:00, ~8 min) — 🚫 NOTHING IS MUTATED HERE
 
 Three panels, one skill, one decision. **The segment least likely to fail on camera.**
 
@@ -610,15 +347,20 @@ Three panels, one skill, one decision. **The segment least likely to fail on cam
 4. Ask Claude `/diagnose`. Three signals that each look fine alone and only mean
    something together, which is exactly the reasoning a skill encodes
 
+**This is the audience's first look at MCP.** `/diagnose` fans out through easy-cass-mcp
+(`query_all_nodes` against `system_views.*`). Let them watch the tool calls and don't
+stop to explain the protocol — Beat 4 names what they saw.
+
 Then put `kubectl get pods` beside `nodetool status` from the rehearsal screenshots
 (Failure 2 below). The two-layer point lands in about fifteen seconds.
 
-**Land it as a decision, not a fix:**
+**Land it as a decision, and make the decision the bridge into Beat 3:**
 
-> _"The skill is telling me I'm leaving throughput on the floor. I know. That limit is
-> sized for two pods per worker after the scale-up, and I'd rather show you a
-> constrained cluster honestly than a tuned one. I measured what fixing it buys —
-> throttling goes to 0.3%, p99 read halves — and I'm choosing not to."_
+> _"The skill is telling me I'm leaving throughput on the floor. It's right. I measured
+> what raising the limit buys — throttling goes to 0.3%, p99 read halves — and I'm not
+> doing it. That limit is sized for two pods per worker, which is exactly what we're
+> about to have. So instead of giving three pods more CPU, I'm going to give this
+> cluster three more pods."_
 
 ⛔ **Do NOT raise the CPU limit live.** See "Why there is no raise-the-limit step" below.
 
@@ -774,6 +516,8 @@ There used to be a step that raised the CPU limit on stage. It is gone:
    showing it invites "so this is a resource-limits talk?"
 3. **It could not have worked.** A CR edit triggers a rolling restart, **measured at
    9.1–9.7 minutes** at size 3 across three runs on 22 Sep. The beat is eight minutes.
+4. **There is a better remedy one beat away.** The limit is sized for six pods on three
+   workers. The scale-up is the fix the limit was designed for.
 
 Keeping the *measurement* and dropping the *action* makes the point stronger: a tool
 whose advice you can knowingly decline is more credible than one you always obey.
@@ -795,19 +539,295 @@ supervised process; it took a live outage to make me go and look.
 worker after the scale-up. At ring size 3 each pod has a whole ~31.5-core worker to
 itself, so the quota binds a pod that could otherwise spread out — **27–88% of CFS
 periods throttled while the worker sits ~80% idle.** It costs roughly **13% of target
-throughput** (52.5k sustained against a 60k ask) — which is the gap Beat 2 closed.
+throughput** (52.5k sustained against a 60k ask) — which is the gap Beat 3 closes, next.
 
 **And `softPodAntiAffinity` is still on**, because three workers cannot host a
 six-node ring any other way. `/expert` calls it "defensible only for
 dev/CI/workshop, not for any RF=3 cluster where availability matters." It is right.
 
-That is a better ending than a clean sweep. A tool that tells you something
+That is a better outcome than a clean sweep. A tool that tells you something
 inconvenient, which you then accept with your eyes open, is more useful than one
 that only confirms what you already did.
 
 > _"The operator defaults shipped five production tunings missed. The loop surfaced
 > all of them in under an hour. I fixed three, and I'm choosing to live with two —
 > and I can tell you exactly why for each one."_
+
+---
+
+## Beat 3 — Scale 3 → 6 (36:00, ~8 min) — ▶ START IT, THEN TALK
+
+If you take one thing from this session: **scaling Apache Cassandra under load is
+no longer an event.**
+
+> **Ask Claude:** _"Scale the `demo` K8ssandraCluster from 3 nodes to 6."_
+
+**Watch which patch it chooses** — this is worth ten seconds of narration. A
+strategic-merge patch replaces the whole datacenter array and gets rejected with
+"storageConfig must be defined"; the edit has to be a JSON patch targeting
+`/spec/cassandra/datacenters/0/size`. It is a genuinely non-obvious Kubernetes trap, and
+watching it get picked correctly is more convincing than asserting it on a slide.
+
+Then hand Claude the job of narrating the bootstrap for you:
+
+> **Ask Claude:** _"Watch the scale-up. Every 30 seconds tell me the ring status, which
+> node is joining, and whether throughput dipped."_
+
+**Start it, then talk over it** — bootstraps are serial and this takes **9 min 20 s**.
+The beat is 8 minutes, so the scale lands at about **45:20, inside Beat 4**. That is
+intentional: Beat 4 opens by asking whether it landed. But it means **do not
+force-kill a node until the ring is 6/6 UN** — that is Beat 5's gate.
+
+### The payoff: the gap from the cold open closes
+
+You opened saying the cluster wanted 60k and gave 52.5k. Doubling the ring is the
+answer to exactly that. They have been looking at the shortfall since the cold open,
+and Beat 2 just showed them the cause.
+Call it as the last node joins:
+
+> _"That's the number I asked you to hold. We were twelve percent short because three
+> pods were pinned against a CPU limit. Same limit — twice the pods."_
+
+✅ **Verified 22 Sep on the corrected dataset.** The gap does not just close — it
+overshoots:
+
+| | size 3 | size 6 |
+|---|---|---|
+| Throughput | 52,500 | **65,000+** |
+| p99 read | 39 ms | **14.5 ms** |
+| p99 write | 20 ms | **7.9 ms** |
+| Container CPU | 9.7 – 13.7 of 14 | **6.3 – 8.9** |
+| Throttled periods | **27 – 88%** | **0.2 – 2.0%** |
+| Errors | 0 | **0** |
+| Time to 6/6 UN | — | **9 min 04 s** |
+
+**Narrate the overshoot — it is real and it looks great.** NoSQLBench has been running
+~13% behind its 60k ask for an hour, so when capacity arrives it bursts to ~66k to
+clear the backlog before settling back onto the 60k rate limit.
+
+> _"It's not just hitting sixty thousand now — it's running ahead to make up what it
+> couldn't do for the last hour. Watch it settle back onto the target."_
+
+Be precise if asked: **60k is the rate limit, not the ceiling.** The overshoot is
+catch-up. What was measured is that the ceiling is no longer below the ask.
+
+### Material to fill the wait
+
+- Each rack goes 1 → 2. `size` must be a multiple of 3 or the racks go unbalanced
+- **Be straight about the compromise.** This cluster has three Cassandra workers, so
+  doubling the ring means two replicas land on each node. For an RF=3 keyspace at
+  LOCAL_QUORUM, losing one node now costs two of three replicas. You would not do
+  this in production — and `/expert` says exactly that (callback to
+  Beat 2). Say it out loud; the audience has three-node clusters too.
+- **Racks don't have to be AZs.** This cluster has no zone labels at all, so the
+  racks here are three worker nodes with a label I applied. A rack is a *logical*
+  failure domain — map it to whatever your real one is. That reframing is the most
+  portable idea in this section.
+- **Rack-aware placement is the thing that failed last time** (optional, if there is
+  time). Two racks, and Cassandra's default
+  `allocate_tokens_for_local_replication_factor=3` couldn't allocate tokens —
+  bootstrap just stalled. Worth telling as a failure, because it's the kind that looks
+  like a hang, not an error.
+- **Zero-Copy Streaming**: sstables stream at the file level, not row by row
+- What the operator is doing: one node at a time, waiting for each to finish joining
+  before starting the next — the thing you used to do by hand with a runbook and a
+  Slack thread
+
+### Mechanics, for your own understanding
+
+**Timings, 17 Sep rehearsal:** patch to 6/6 `UN` in **9 min 20 s**, first new node
+joined at ~2 min, **0** NoSQLBench errors. These are ring and streaming mechanics and
+still hold. The throughput figures from that run were taken on the pre-22-Sep dataset
+and have been removed, not footnoted.
+
+**What ownership looks like mid-scale** — the shape Beat 4's ring query will probably
+catch, since the scale is still running when you ask:
+
+```
+UN  rack1   original             owns 51.5%
+UN  rack2   original             owns 51.5%
+UN  rack3   original             owns 100.0%   <- not yet split
+UN  rack2   NEW, joined          owns 48.5%
+UJ  rack1   NEW, still streaming
+```
+
+One rack still at 100% while the others have already halved. That single screen says
+more about what the operator is doing than any slide would.
+
+**A caveat worth knowing.** On 17 Sep the scale succeeded and the load never saw an
+error — but the `server-system-logger` sidecar OOMKilled on several pods during it
+(128 MiB limit, 122 MiB steady state). Cassandra was untouched and never left the
+ring, yet those pods reported **2/3 Ready**. The limit is now 256 MiB.
+
+That is the exact inverse of the disk-full failure in Beat 2, where the pod said
+3/3 Running and Cassandra was dead. Pod readiness was wrong in both directions, for
+opposite reasons.
+
+---
+
+## Beat 4 — MCP (44:00, ~6 min) — ⏸ THE SCALE LANDS DURING THIS BEAT
+
+Open with the question the audience is already asking:
+
+> **Ask Claude:** _"Is the ring at 6 nodes yet? Give me each node's rack, load and
+> ownership."_
+
+**It will probably still be joining** — the scale started at 36:00 and needs 9m20s.
+That is the better answer, not the worse one: you get a live `UJ` node and an
+ownership split mid-flight, which is the most honest picture of what the operator is
+doing. Ask again later in the beat and it will be 6/6.
+
+That is MCP earning its place: the thing you started eight minutes ago, verified in one
+sentence instead of a terminal full of `nodetool`. **Do not kill anything until it
+says 6/6** — you have until 50:00.
+
+**Optional, once it says 6/6:** start a full repair of `payments` from the Reaper tab
+and leave it. It is only there to give Beat 5 its best line, and it needs a couple of
+minutes of visibly ticking segments before the kill. Skip it and Beat 5 simply loses
+one sentence.
+
+### What MCP is, and why this one is narrow
+
+- **Name what they already saw.** The tool calls `/diagnose` made in Beat 2 were MCP.
+  This is the plumbing behind them.
+- **MCP in 30 seconds** — Model Context Protocol, a standard for giving models tools.
+  Server exposes tools → Claude calls them → results come back as context.
+- **easy-cass-mcp:** a domain-specific MCP server that speaks CQL, deployed
+  in-cluster. Claude Code → OpenShift Route (edge TLS) → easy-cass-mcp pod → Cassandra
+  pods. The endpoint is
+  `https://easy-cass-mcp-default.apps.itz-ckzpiv.infra01-lb.dal14.techzone.ibm.com/mcp/`
+  — worth putting on the slide, because "the MCP server is a URL your agent dials" is
+  the whole architecture in one line.
+
+  | Tool | What it does |
+  |---|---|
+  | `query_all_nodes(cql)` | Fans out a CQL query to every replica, labels results by node — essential for the `system_views.*` per-node virtual tables |
+  | `query_node(addr, cql)` | Targets a single replica for deep dives |
+  | `query_system_table(keyspace, table)` | Curated access to system keyspaces (peers, local, sstable_activity, ...) |
+  | `get_create_table(keyspace, table)` | Pulls canonical schema — feeds data-model analysis |
+  | `analyze_table_optimizations(keyspace, table)` | Version-aware compaction recommendations |
+
+- **Build narrow, not wide:**
+  - Tried a generic Kubernetes MCP server first — a single `get pods` dumps
+    thousands of tokens of labels, annotations, status conditions
+  - easy-cass-mcp returns only what's relevant, structured by node
+  - **Takeaway: MCP server *design* matters as much as MCP server existence.**
+
+### A second MCP server, and why it matters more than it looks
+
+Also connected: **[grafana/mcp-grafana](https://github.com/grafana/mcp-grafana)**,
+Grafana Labs' own server. Run read-only — a Viewer service account, `--disable-write`,
+and the tool surface trimmed from ~60 to 17.
+
+Three reasons it earns its slide:
+
+- **It is not mine.** Everything else on stage is something I built or configured.
+  This is a vendor arriving at the same pattern independently, which is the difference
+  between "here is my clever setup" and "here is where the ecosystem is going."
+- **It solves a real constraint.** Prometheus on this cluster is ClusterIP with no
+  Route. The server proxies PromQL *through* Grafana's datasource API, so it needs
+  only the Grafana URL and a token — nothing new exposed.
+- **It spans both layers.** It can reach our kube-prometheus-stack *and* OpenShift's
+  Thanos. That is Beat 2's two-layer argument with the agent as the thing that spans
+  them, instead of you alt-tabbing between dashboards.
+
+> **The story worth telling, because it is true and it is recent.** Within ten minutes
+> of being connected, it caught a wrong number on this deck. Slide 17 claimed Cassandra
+> was pegged at 14/14 CPU. It was not — OpenShift's Thanos returns two identical
+> cAdvisor series per container, the panel summed them, and every CPU and memory reading
+> was double. The tell was already on the slide: the worker-node panel disagreed, and
+> had for days.
+>
+> _The AI made a claim I could check against two other sources, and checking is what
+> found it._ That is the honest version of the whole talk — not "the AI was right".
+
+---
+
+## Beat 5 — Kill a node (50:00, ~6 min) — ▶ ONLY AFTER 6/6 UN
+
+_The load test is still running. The ring just went to 6._
+
+> **Ask Claude:** _"Force-kill the pod `demo-dc1-rack2-sts-1` — no grace period, no
+> graceful drain. I want it to die the way a real node dies."_
+
+**Ask for the force-kill explicitly.** A polite `kubectl delete pod` gives Cassandra a
+clean drain, which is a demo of a rolling restart, not of a node failure. The
+44-second recovery below is only impressive because nothing was handed over.
+
+**Measured, 17 Sep rehearsal** — `--grace-period=0 --force` under the 60k load:
+
+| | |
+|---|---|
+| Node detected `DN` | ~24 s |
+| Back to `UN` | **44 s** |
+| Pod `3/3 Running` | **64 s** |
+| `unavailables` / `failures` | **0** / **0** |
+| `timeouts` | **1**, over 10 minutes and ~36M operations |
+
+**Quote the 1, not "zero".** It is a more credible number, and it is the truth. (The
+throughput trace from that run was on the pre-22-Sep dataset and has been dropped; the
+timings are ring mechanics and still hold.)
+
+### 🌟 The line that lands: the repair didn't notice (only if you started one)
+
+If you started a Reaper repair once the ring hit 6/6, it is running now — and **a
+force-kill does not interrupt it.** Measured 21 Sep: segments kept incrementing
+straight through (22 → 23 → 24), at the same ~2/min, and Reaper never restarted.
+
+Why that matters, in two sentences if anyone asks: replicas drift because writes
+fail, hints expire, and nodes miss mutations while down. If a deleted row isn't
+repaired before `gc_grace_seconds`, the tombstone is collected and the row comes back
+from a replica that never heard about the delete — zombie data.
+
+And why the repair is never the demo itself: a full repair of
+`payments` is **436 segments at ~2/min, and completed in 3 h 40 min** (measured on an
+idle 6-node ring). **Do not apologise for that number — it is the entire argument for
+Reaper.** A multi-hour job split into hundreds of resumable segments, paced so it does
+not compete with production traffic, that survives a node dying underneath it, is
+exactly the job you do not want to run by hand. If the bar were "finishes during a
+conference talk", nobody would need the tool.
+
+Two different events, two different outcomes, both measured 21 Sep:
+
+| Event | Reaper | The repair |
+|---|---|---|
+| **Force-kill one node** — what this beat does | **no restart** | **never paused**, same ~2/min throughout |
+| **Rolling restart of every pod** (any CR edit) | exits code 1 after 9 s, recovers on its own | resumes from the last completed segment |
+
+**Why the repair waits until after the scale (decided 22 Sep).** Starting it at 6/6
+reproduces the 21 Sep measurement exactly — repair started at size 6, node killed at
+size 6, no topology change in between. A repair that spans the 3 → 6 scale-up was
+never measured, so it is not attempted.
+
+> ⚠️ **One combination is still unmeasured:** the kill timings above (17 Sep) were taken
+> with no repair running, and the 21 Sep repair measurement was on an idle ring. A
+> repair *plus* the 60k load *plus* the kill has not been run together. The repair
+> adds load, so expect the recovery to be no faster than 44 s / 64 s. If the repair is
+> not visibly ticking before 50:00, skip it and the line — the kill stands on its own
+> numbers.
+
+### Then the debrief
+
+> **Ask Claude:** _"What do you see now?"_
+
+Claude re-queries and surfaces the anomaly: the restarted node's counters are a
+fraction of its peers' and ramping. It should read that as a recent restart, not a
+fault, and note the load test never dropped a query.
+
+**Two details worth showing, because they are the actual mechanism:**
+
+- The node logged **`Using saved tokens`** and reused its PVC
+  (`server-data-demo-dc1-rack2-sts-1`), keeping the same host ID. It did **not**
+  re-bootstrap — there was no streaming, because the data was already on disk.
+  Cassandra saw the same node returning from a brief outage, not a new one.
+- NoSQLBench will print red `ConnectionInitException` warnings. **Those are not
+  query failures.** They are the driver's admin thread rebuilding its connection
+  pool against the replacement pod's new IP, backing off 8.7s → 14.9s → 21.9s
+  → 30.9s. Point at `unavailables` and `timeouts`: _"no query failed; that's a pool
+  reconnect."_
+
+**The point:** in the old world that was a maintenance window, a runbook, and a
+Slack thread. Here it is a 64-second demo with a natural-language debrief.
 
 ---
 
@@ -844,10 +864,10 @@ Full detail in the README; this is the timing skeleton.
 | T-143 | **Restart Claude Code first**, then verify BOTH servers: _"Query all nodes for their release version"_ (easy-cass-mcp) and _"List the Grafana datasources"_ (grafana). See the MCP restart note below — this step catches a failure that is otherwise invisible until you are on camera |
 | T-135 | `nosqlbench-payments-prepare-job` — schema + 50M-row load |
 | T-117 | **Pre-flight Medusa backup** to prove the MinIO path end to end, then delete it so the live one is a genuine first full backup. Use a DIFFERENT name for the live one — Medusa keeps backup metadata in the bucket, so a reused name fails with "already exists" even after the Kubernetes object is deleted |
-| T-109 | **Confirm Reaper has registered `demo`** — that proves the `reaper_db` schema migration, the silent failure. **Do NOT start a repair.** If one runs at all, it starts after the scale-up, late in Beat 3 |
+| T-109 | **Confirm Reaper has registered `demo`** — that proves the `reaper_db` schema migration, the silent failure. **Do NOT start a repair.** If one runs at all, it starts after the scale-up, late in Beat 4 |
 | T-103 | Start the main NoSQLBench job |
 | T-100 → T-40 | **Soak.** Throughput settles, driver pool warms, Grafana accumulates history. Touch nothing. |
-| T-40 | Confirm **~52.5k sustained against the 60k ask**, zero errors. **Do NOT lower `cyclerate`** — the shortfall is the setup for Beat 2 |
+| T-40 | Confirm **~52.5k sustained against the 60k ask**, zero errors. **Do NOT lower `cyclerate`** — the shortfall is the setup for Beats 2 and 3 |
 | T-25 | Open the Routes in tabs and confirm they load **and that you are logged in** (see Live endpoints above): Grafana, Reaper (`demo` listed, no repair running), and the MCP `/mcp/` endpoint |
 | T-20 | Screenshot every live moment as a backup slide; Zoom share test at presentation font size |
 

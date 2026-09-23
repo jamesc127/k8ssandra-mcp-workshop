@@ -74,7 +74,7 @@ Differences worth knowing:
   each pod owns a whole worker, so the quota costs ~13% of target throughput (52.5k sustained
   against a 60k ask). It is kept because it makes the
   workshop's central finding demonstrable live rather than recounted — see `docs/talk-outline.md`
-  Beat 5. **Any throughput number measured here comes from a deliberately constrained cluster.**
+  Beat 2. **Any throughput number measured here comes from a deliberately constrained cluster.**
 
 ### Monitoring uses two datasources
 
